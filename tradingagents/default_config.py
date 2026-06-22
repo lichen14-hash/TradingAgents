@@ -32,6 +32,14 @@ def _coerce(value: str, reference):
     return value
 
 
+_DATA_VENDOR_ENV = {
+    "TRADINGAGENTS_STOCK_VENDOR":       "core_stock_apis",
+    "TRADINGAGENTS_INDICATOR_VENDOR":   "technical_indicators",
+    "TRADINGAGENTS_FUNDAMENTAL_VENDOR": "fundamental_data",
+    "TRADINGAGENTS_NEWS_VENDOR":        "news_data",
+}
+
+
 def _apply_env_overrides(config: dict) -> dict:
     """Apply TRADINGAGENTS_* env vars to the config dict in-place."""
     for env_var, key in _ENV_OVERRIDES.items():
@@ -39,6 +47,10 @@ def _apply_env_overrides(config: dict) -> dict:
         if raw is None or raw == "":
             continue
         config[key] = _coerce(raw, config.get(key))
+    for env_var, category in _DATA_VENDOR_ENV.items():
+        raw = os.environ.get(env_var)
+        if raw is not None and raw != "":
+            config.setdefault("data_vendors", {})[category] = raw
     return config
 
 
