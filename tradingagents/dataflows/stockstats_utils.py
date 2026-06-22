@@ -163,22 +163,30 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        downloaded = yf_retry(lambda: yf.download(
-            canonical,
-            start=start_str,
-            end=end_str,
-            multi_level_index=False,
-            progress=False,
-            auto_adjust=True,
-        ))
-        downloaded = _ensure_date_column(downloaded.reset_index())
-        # Only cache real data — never persist an empty frame.
-        if downloaded.empty or "Close" not in downloaded.columns:
-            raise NoMarketDataError(
-                symbol, canonical, "Yahoo Finance returned no rows"
-            )
-        downloaded.to_csv(data_file, index=False, encoding="utf-8")
-        data = downloaded
+        try:
+            downloaded = yf_retry(lambda: yf.download(
+                canonical,
+                start=start_str,
+                end=end_str,
+                multi_level_index=False,
+                progress=False,
+                auto_adjust=True,
+            ))
+            downloaded = _ensure_date_column(downloaded.reset_index())
+            if downloaded.empty or "Close" not in downloaded.columns:
+                raise NoMarketDataError(
+                    symbol, canonical, "Yahoo Finance returned no rows"
+                )
+        except Exception:
+            from .sina_finance import _load_ohlcv_sina
+            logger.info("yfinance unavailable for %s, falling back to Sina Finance", symbol)
+            data = _load_ohlcv_sina(symbol, curr_date)
+            data.to_csv(data_file, index=False, encoding="utf-8")
+            downloaded = None
+
+        if downloaded is not None:
+            downloaded.to_csv(data_file, index=False, encoding="utf-8")
+            data = downloaded
 
     data = _clean_dataframe(data)
 
