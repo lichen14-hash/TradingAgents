@@ -40,6 +40,7 @@ from cli.utils import (
     select_research_depth,
     select_shallow_thinking_agent,
 )
+from tradingagents.datacollector import DataBundle, DataCollector
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
@@ -62,6 +63,7 @@ app = typer.Typer(
 class MessageBuffer:
     # Fixed teams that always run (not user-selectable)
     FIXED_AGENTS = {
+        "Data Collection": ["Data Collector"],
         "Research Team": ["Bull Researcher", "Bear Researcher", "Research Manager"],
         "Trading Team": ["Trader"],
         "Risk Management": ["Aggressive Analyst", "Neutral Analyst", "Conservative Analyst"],
@@ -300,6 +302,7 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
 
     # Group agents by team - filter to only include agents in agent_status
     all_teams = {
+        "Data Collection": ["Data Collector"],
         "Analyst Team": [
             "Market Analyst",
             "Sentiment Analyst",
@@ -1019,7 +1022,7 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def run_analysis(checkpoint: bool = False, data_bundle_path: str | None = None):
     # First get all user selections
     selections = get_user_selections()
 
@@ -1132,10 +1135,9 @@ def run_analysis(checkpoint: bool = False):
         )
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
-        # Update agent status to in_progress for the first analyst
-        first_analyst = get_initial_analyst_node(analyst_execution_plan)
-        message_buffer.update_agent_status(first_analyst, "in_progress")
-        analyst_wall_time_tracker.mark_started(selected_analyst_keys[0])
+        # Mark data collection as in_progress (will be skipped quickly if bundle is pre-loaded)
+        if not data_bundle_path:
+            message_buffer.update_agent_status("Data Collector", "in_progress")
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
         # Create spinner text
@@ -1143,6 +1145,16 @@ def run_analysis(checkpoint: bool = False):
             f"Analyzing {selections['ticker']} on {selections['analysis_date']}..."
         )
         update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
+
+        # Load pre-collected data bundle if provided
+        loaded_bundle = None
+        if data_bundle_path:
+            message_buffer.add_message("System", f"Loading data bundle: {data_bundle_path}")
+            update_display(layout, stats_handler=stats_handler, start_time=start_time)
+            loaded_bundle = DataCollector.load(data_bundle_path)
+            message_buffer.update_agent_status("Data Collector", "completed")
+            message_buffer.add_message("System", "Data bundle loaded, skipping collection")
+            update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
         # Initialize state and get graph args with callbacks.
         # Resolve the instrument identity once here so all agents anchor to
@@ -1156,6 +1168,7 @@ def run_analysis(checkpoint: bool = False):
             selections["analysis_date"],
             asset_type=selections["asset_type"],
             instrument_context=instrument_context,
+            data_bundle=loaded_bundle.model_dump() if loaded_bundle else None,
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
@@ -1182,6 +1195,14 @@ def run_analysis(checkpoint: bool = False):
                             message_buffer.add_tool_call(tool_call["name"], tool_call["args"])
                         else:
                             message_buffer.add_tool_call(tool_call.name, tool_call.args)
+
+            # Data Collection node completed
+            if chunk.get("data_bundle"):
+                message_buffer.update_agent_status("Data Collector", "completed")
+                message_buffer.add_message("System", "Data collection complete")
+                first_analyst = get_initial_analyst_node(analyst_execution_plan)
+                message_buffer.update_agent_status(first_analyst, "in_progress")
+                analyst_wall_time_tracker.mark_started(selected_analyst_keys[0])
 
             # Update analyst statuses based on report state (runs on every chunk)
             update_analyst_statuses(
@@ -1326,12 +1347,68 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    data_bundle: str = typer.Option(
+        None,
+        "--data-bundle",
+        help="Path to a pre-collected data bundle JSON file. Skips data collection.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(checkpoint=checkpoint, data_bundle_path=data_bundle)
+
+
+@app.command()
+def collect(
+    ticker: str = typer.Argument(..., help="Ticker symbol (e.g. NVDA, 0700.HK, BTC-USD)"),
+    date: str = typer.Option(
+        None,
+        "--date", "-d",
+        help="Trade date in YYYY-MM-DD format. Defaults to today.",
+    ),
+    output: str = typer.Option(
+        None,
+        "--output", "-o",
+        help="Output directory or file path. Defaults to config data_dir.",
+    ),
+):
+    """Collect market data without running analysis. Saves to JSON for later replay."""
+    if date is None:
+        date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        datetime.datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        console.print("[red]Error: Invalid date format. Use YYYY-MM-DD[/red]")
+        raise typer.Exit(1)
+
+    config = DEFAULT_CONFIG.copy()
+    asset_type = detect_asset_type(ticker).value
+
+    console.print(f"[bold cyan]Collecting data for {ticker} on {date}...[/bold cyan]")
+    collector = DataCollector(config)
+
+    save_dir = Path(output) if output else None
+    bundle, filepath = collector.collect_and_save(
+        ticker, date, asset_type=asset_type, save_dir=save_dir,
+    )
+
+    console.print(f"[green]Data bundle saved to:[/green] {filepath}")
+    console.print(f"[dim]Bundle version: {bundle.metadata.bundle_version}[/dim]")
+    console.print(f"[dim]Collected at: {bundle.metadata.collection_timestamp}[/dim]")
+
+    sections = []
+    if bundle.market:
+        sections.append("market")
+    if bundle.sentiment:
+        sections.append("sentiment")
+    if bundle.news:
+        sections.append("news")
+    if bundle.fundamentals:
+        sections.append("fundamentals")
+    console.print(f"[dim]Sections: {', '.join(sections)}[/dim]")
 
 
 if __name__ == "__main__":

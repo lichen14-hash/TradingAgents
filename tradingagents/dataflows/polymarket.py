@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from .retry import call_with_retry
+
 logger = logging.getLogger(__name__)
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
@@ -27,8 +29,9 @@ DEFAULT_LIMIT = 6
 
 
 def _request(path: str, params: dict) -> dict:
-    response = requests.get(
-        f"{GAMMA_BASE}/{path}", params=params, timeout=REQUEST_TIMEOUT
+    response = call_with_retry(
+        requests.get,
+        f"{GAMMA_BASE}/{path}", params=params, timeout=REQUEST_TIMEOUT,
     )
     response.raise_for_status()
     return response.json()

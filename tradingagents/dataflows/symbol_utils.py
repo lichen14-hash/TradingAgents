@@ -114,6 +114,10 @@ def normalize_symbol(raw: str) -> str:
     if not isinstance(raw, str) or not raw.strip():
         return raw
 
+    from .market_utils import is_a_share, normalize_a_share_symbol
+    if is_a_share(raw.strip()):
+        return normalize_a_share_symbol(raw.strip())
+
     s = raw.strip().upper()
     # Broker CFD/qualifier suffixes Yahoo never uses.
     s = s.rstrip("+")

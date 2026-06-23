@@ -18,6 +18,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_DATA_DIR":             "data_dir",
 }
 
 
@@ -107,6 +108,40 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "geopolitical risk trade war sanctions",
         "ECB Bank of England BOJ central bank policy",
         "oil commodities supply chain energy",
+    ],
+    # Data collection settings
+    "data_dir": os.getenv("TRADINGAGENTS_DATA_DIR", os.path.join(_TRADINGAGENTS_HOME, "data")),
+    "save_data_bundle": True,
+    "standard_macro_indicators": [
+        "fed_funds_rate", "2y_treasury", "10y_treasury", "30y_treasury",
+        "yield_curve", "cpi", "core_cpi", "pce", "core_pce",
+        "inflation_expectations", "real_gdp", "gdp", "industrial_production",
+        "unemployment", "nonfarm_payrolls", "initial_claims", "m2",
+        "vix", "dollar_index", "consumer_sentiment", "housing_starts",
+        "retail_sales",
+    ],
+    "standard_prediction_queries": [
+        "Fed rate cut", "recession", "inflation",
+        "stock market crash", "geopolitical conflict",
+    ],
+    "cn_macro_indicators": [
+        "lpr_1y", "lpr_5y", "mlf_rate", "shibor_overnight", "rrr",
+        "cn_cpi", "cn_ppi", "cn_pmi_mfg", "cn_pmi_non_mfg",
+        "cn_m2", "cn_m1", "social_financing", "new_yuan_loans",
+        "cn_gdp", "cn_industrial_production", "cn_fixed_asset_investment",
+        "cn_retail_sales", "cn_forex_reserves", "cn_trade_balance",
+        "cn_housing_price", "cn_10y_treasury", "cn_1y_treasury", "cn_unemployment",
+    ],
+    "cn_prediction_queries": [
+        "PBOC rate cut", "China recession", "China property crisis",
+        "US-China trade war", "China tech regulation",
+    ],
+    "cn_global_news_queries": [
+        "央行货币政策 利率 中国",
+        "中国 GDP 经济增长 展望",
+        "A股 沪深 市场",
+        "中美 贸易 关税",
+        "中国 房地产 市场",
     ],
     # Data vendor configuration
     # Category-level configuration (default for all tools in category).

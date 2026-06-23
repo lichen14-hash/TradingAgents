@@ -18,11 +18,65 @@ from .errors import (
     VendorRateLimitError,
 )
 from .fred import get_macro_data as get_fred_macro_data
+from .market_utils import is_a_share
+from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
 from .sina_finance import (
     get_indicators as get_sina_indicators,
     get_stock_data as get_sina_stock,
 )
-from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
+
+try:
+    from .akshare_provider import (
+        get_balance_sheet as get_akshare_balance_sheet,
+        get_cashflow as get_akshare_cashflow,
+        get_fundamentals as get_akshare_fundamentals,
+        get_global_news as get_akshare_global_news,
+        get_income_statement as get_akshare_income_statement,
+        get_indicators as get_akshare_indicators,
+        get_insider_transactions as get_akshare_insider_transactions,
+        get_news as get_akshare_news,
+        get_stock_data as get_akshare_stock,
+    )
+    _AKSHARE_AVAILABLE = True
+except ImportError:
+    _AKSHARE_AVAILABLE = False
+
+try:
+    from .baostock_provider import (
+        get_balance_sheet as get_baostock_balance_sheet,
+        get_cashflow as get_baostock_cashflow,
+        get_fundamentals as get_baostock_fundamentals,
+        get_income_statement as get_baostock_income_statement,
+        get_indicators as get_baostock_indicators,
+        get_stock_data as get_baostock_stock,
+    )
+    _BAOSTOCK_AVAILABLE = True
+except ImportError:
+    _BAOSTOCK_AVAILABLE = False
+
+try:
+    from .efinance_provider import (
+        get_indicators as get_efinance_indicators,
+        get_stock_data as get_efinance_stock,
+    )
+    _EFINANCE_AVAILABLE = True
+except ImportError:
+    _EFINANCE_AVAILABLE = False
+
+try:
+    from .tushare_provider import (
+        get_indicators as get_tushare_indicators,
+        get_stock_data as get_tushare_stock,
+    )
+    _TUSHARE_AVAILABLE = True
+except ImportError:
+    _TUSHARE_AVAILABLE = False
+
+try:
+    from .china_macro import get_cn_macro_data
+    _CN_MACRO_AVAILABLE = True
+except ImportError:
+    _CN_MACRO_AVAILABLE = False
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -87,6 +141,11 @@ VENDOR_LIST = [
     "polymarket",
     "alpha_vantage",
     "sina",
+    "akshare",
+    "tushare",
+    "baostock",
+    "efinance",
+    "cn_macro",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -96,46 +155,66 @@ VENDOR_METHODS = {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
         "sina": get_sina_stock,
+        **({"akshare": get_akshare_stock} if _AKSHARE_AVAILABLE else {}),
+        **({"tushare": get_tushare_stock} if _TUSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_stock} if _BAOSTOCK_AVAILABLE else {}),
+        **({"efinance": get_efinance_stock} if _EFINANCE_AVAILABLE else {}),
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
         "sina": get_sina_indicators,
+        **({"akshare": get_akshare_indicators} if _AKSHARE_AVAILABLE else {}),
+        **({"tushare": get_tushare_indicators} if _TUSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_indicators} if _BAOSTOCK_AVAILABLE else {}),
+        **({"efinance": get_efinance_indicators} if _EFINANCE_AVAILABLE else {}),
     },
     # fundamental_data
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        **({"akshare": get_akshare_fundamentals} if _AKSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_fundamentals} if _BAOSTOCK_AVAILABLE else {}),
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        **({"akshare": get_akshare_balance_sheet} if _AKSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_balance_sheet} if _BAOSTOCK_AVAILABLE else {}),
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        **({"akshare": get_akshare_cashflow} if _AKSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_cashflow} if _BAOSTOCK_AVAILABLE else {}),
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        **({"akshare": get_akshare_income_statement} if _AKSHARE_AVAILABLE else {}),
+        **({"baostock": get_baostock_income_statement} if _BAOSTOCK_AVAILABLE else {}),
     },
     # news_data
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        **({"akshare": get_akshare_news} if _AKSHARE_AVAILABLE else {}),
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        **({"akshare": get_akshare_global_news} if _AKSHARE_AVAILABLE else {}),
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        **({"akshare": get_akshare_insider_transactions} if _AKSHARE_AVAILABLE else {}),
     },
     # macro_data
     "get_macro_indicators": {
         "fred": get_fred_macro_data,
+        **({"cn_macro": get_cn_macro_data} if _CN_MACRO_AVAILABLE else {}),
     },
     # prediction_markets
     "get_prediction_markets": {
@@ -165,10 +244,37 @@ def get_vendor(category: str, method: str = None) -> str:
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
 
+_A_SHARE_VENDOR_CHAINS = {
+    "get_stock_data": "akshare,tushare,baostock,sina,efinance",
+    "get_indicators": "akshare,tushare,baostock,sina,efinance",
+    "get_fundamentals": "akshare,baostock",
+    "get_balance_sheet": "akshare,baostock",
+    "get_cashflow": "akshare,baostock",
+    "get_income_statement": "akshare,baostock",
+    "get_news": "akshare",
+    "get_global_news": "akshare",
+    "get_insider_transactions": "akshare",
+    "get_macro_indicators": "cn_macro",
+    "get_prediction_markets": "polymarket",
+}
+
+_DEFAULT_US_VENDORS = {"yfinance", "alpha_vantage", "fred", "default"}
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
+
+    ticker_arg = args[0] if args else None
+    if (
+        ticker_arg
+        and is_a_share(str(ticker_arg))
+        and method in _A_SHARE_VENDOR_CHAINS
+        and {v.strip() for v in vendor_config.split(",")}.issubset(_DEFAULT_US_VENDORS)
+    ):
+        vendor_config = _A_SHARE_VENDOR_CHAINS[method]
+
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     if method not in VENDOR_METHODS:

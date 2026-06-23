@@ -8,7 +8,6 @@ class AnalystNodeSpec:
     key: str
     agent_node: str
     clear_node: str
-    tool_node: str
     report_key: str
 
 
@@ -23,32 +22,24 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
         key="market",
         agent_node="Market Analyst",
         clear_node="Msg Clear Market",
-        tool_node="tools_market",
         report_key="market_report",
     ),
     "social": AnalystNodeSpec(
-        # Wire key stays "social" for saved-config back-compat; the
-        # user-facing label is "Sentiment Analyst" to match the rename
-        # that landed in v0.2.5 (sentiment_analyst now ingests news +
-        # StockTwits + Reddit, not just social media).
         key="social",
         agent_node="Sentiment Analyst",
         clear_node="Msg Clear Sentiment",
-        tool_node="tools_social",
         report_key="sentiment_report",
     ),
     "news": AnalystNodeSpec(
         key="news",
         agent_node="News Analyst",
         clear_node="Msg Clear News",
-        tool_node="tools_news",
         report_key="news_report",
     ),
     "fundamentals": AnalystNodeSpec(
         key="fundamentals",
         agent_node="Fundamentals Analyst",
         clear_node="Msg Clear Fundamentals",
-        tool_node="tools_fundamentals",
         report_key="fundamentals_report",
     ),
 }

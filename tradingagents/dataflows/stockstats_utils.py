@@ -14,10 +14,8 @@ from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
-# A vendor's latest OHLCV row this many calendar days before the requested date
-# is treated as stale. Generous enough to span long holiday weekends, tight
-# enough to catch the year-old frames yfinance occasionally returns (#1021).
 MAX_OHLCV_STALE_DAYS = 10
+MAX_OHLCV_STALE_DAYS_CN = 15
 
 
 def yf_retry(func, max_retries=3, base_delay=2.0):
@@ -163,26 +161,61 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        try:
-            downloaded = yf_retry(lambda: yf.download(
-                canonical,
-                start=start_str,
-                end=end_str,
-                multi_level_index=False,
-                progress=False,
-                auto_adjust=True,
-            ))
-            downloaded = _ensure_date_column(downloaded.reset_index())
-            if downloaded.empty or "Close" not in downloaded.columns:
-                raise NoMarketDataError(
-                    symbol, canonical, "Yahoo Finance returned no rows"
-                )
-        except Exception:
-            from .sina_finance import _load_ohlcv_sina
-            logger.info("yfinance unavailable for %s, falling back to Sina Finance", symbol)
-            data = _load_ohlcv_sina(symbol, curr_date)
-            data.to_csv(data_file, index=False, encoding="utf-8")
+        from .market_utils import is_a_share
+
+        if is_a_share(canonical):
+            _a_share_loaders = [
+                ("AKShare", lambda: __import__(
+                    "tradingagents.dataflows.akshare_provider", fromlist=["_load_ohlcv_akshare"]
+                )._load_ohlcv_akshare(canonical, curr_date)),
+                ("TuShare", lambda: __import__(
+                    "tradingagents.dataflows.tushare_provider", fromlist=["_load_ohlcv_tushare"]
+                )._load_ohlcv_tushare(canonical, curr_date)),
+                ("BaoStock", lambda: __import__(
+                    "tradingagents.dataflows.baostock_provider", fromlist=["_load_ohlcv_baostock"]
+                )._load_ohlcv_baostock(canonical, curr_date)),
+                ("Sina", lambda: __import__(
+                    "tradingagents.dataflows.sina_finance", fromlist=["_load_ohlcv_sina"]
+                )._load_ohlcv_sina(canonical, curr_date)),
+                ("efinance", lambda: __import__(
+                    "tradingagents.dataflows.efinance_provider", fromlist=["_load_ohlcv_efinance"]
+                )._load_ohlcv_efinance(canonical, curr_date)),
+            ]
             downloaded = None
+            for loader_name, loader_fn in _a_share_loaders:
+                try:
+                    logger.info("Loading A-share OHLCV for %s via %s", symbol, loader_name)
+                    data = loader_fn()
+                    data.to_csv(data_file, index=False, encoding="utf-8")
+                    break
+                except Exception:
+                    logger.info("%s unavailable for %s, trying next provider", loader_name, symbol)
+            else:
+                logger.info("All A-share providers unavailable for %s, falling back to yfinance", symbol)
+                downloaded = yf_retry(lambda: yf.download(
+                    canonical, start=start_str, end=end_str,
+                    multi_level_index=False, progress=False, auto_adjust=True,
+                ))
+                downloaded = _ensure_date_column(downloaded.reset_index())
+                if downloaded.empty or "Close" not in downloaded.columns:
+                    raise NoMarketDataError(symbol, canonical, "No OHLCV data from any vendor") from None
+        else:
+            try:
+                downloaded = yf_retry(lambda: yf.download(
+                    canonical, start=start_str, end=end_str,
+                    multi_level_index=False, progress=False, auto_adjust=True,
+                ))
+                downloaded = _ensure_date_column(downloaded.reset_index())
+                if downloaded.empty or "Close" not in downloaded.columns:
+                    raise NoMarketDataError(
+                        symbol, canonical, "Yahoo Finance returned no rows"
+                    )
+            except Exception:
+                from .sina_finance import _load_ohlcv_sina
+                logger.info("yfinance unavailable for %s, falling back to Sina Finance", symbol)
+                data = _load_ohlcv_sina(symbol, curr_date)
+                data.to_csv(data_file, index=False, encoding="utf-8")
+                downloaded = None
 
         if downloaded is not None:
             downloaded.to_csv(data_file, index=False, encoding="utf-8")
@@ -193,9 +226,9 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # Filter to curr_date to prevent look-ahead bias in backtesting
     data = data[data["Date"] <= curr_date_dt]
 
-    # Reject a stale frame (latest row far older than curr_date) rather than
-    # feeding year-old prices into indicators (#1021).
-    _assert_ohlcv_not_stale(data, curr_date, symbol, canonical)
+    from .market_utils import is_a_share as _is_a_share
+    stale_limit = MAX_OHLCV_STALE_DAYS_CN if _is_a_share(canonical) else MAX_OHLCV_STALE_DAYS
+    _assert_ohlcv_not_stale(data, curr_date, symbol, canonical, max_stale_days=stale_limit)
 
     return data
 
