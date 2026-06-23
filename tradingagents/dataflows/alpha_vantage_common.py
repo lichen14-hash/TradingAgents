@@ -7,6 +7,7 @@ import pandas as pd
 import requests
 
 from .errors import VendorNotConfiguredError, VendorRateLimitError
+from .retry import call_with_retry
 
 API_BASE_URL = "https://www.alphavantage.co/query"
 
@@ -83,7 +84,7 @@ def _make_api_request(function_name: str, params: dict) -> dict | str:
         # Remove entitlement if it's None or empty
         api_params.pop("entitlement", None)
 
-    response = requests.get(API_BASE_URL, params=api_params, timeout=REQUEST_TIMEOUT)
+    response = call_with_retry(requests.get, API_BASE_URL, params=api_params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
 
     response_text = response.text

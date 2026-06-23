@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 import requests
 
 from .errors import VendorNotConfiguredError
+from .retry import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,9 @@ def _resolve_series_id(indicator: str) -> str:
 def _request(path: str, params: dict) -> dict:
     """GET a FRED endpoint, surfacing FRED's JSON error body on a bad request."""
     api_params = {**params, "api_key": get_api_key(), "file_type": "json"}
-    response = requests.get(
-        f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT
+    response = call_with_retry(
+        requests.get,
+        f"{FRED_API_BASE}/{path}", params=api_params, timeout=REQUEST_TIMEOUT,
     )
     # FRED returns 400 with a JSON {"error_message": ...} for unknown series IDs
     # or malformed params; turn that into a clear, actionable error.

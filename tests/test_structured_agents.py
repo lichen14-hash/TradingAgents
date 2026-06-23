@@ -295,6 +295,25 @@ def _make_sentiment_state():
         "trade_date": "2026-01-15",
         "asset_type": "stock",
         "messages": [],
+        "data_bundle": {
+            "metadata": {
+                "ticker": "NVDA",
+                "trade_date": "2026-01-15",
+                "asset_type": "stock",
+                "collection_timestamp": "2026-01-15T12:00:00",
+                "selected_analysts": ["social"],
+                "vendor_config": {},
+                "bundle_version": "1.0",
+            },
+            "market": None,
+            "sentiment": {
+                "ticker_news": "NVDA news summary for test",
+                "stocktwits": "StockTwits: bullish chatter on NVDA",
+                "reddit": "Reddit: mixed sentiment on NVDA",
+            },
+            "news": None,
+            "fundamentals": None,
+        },
     }
 
 

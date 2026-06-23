@@ -85,18 +85,27 @@ def resolve_instrument_identity(ticker: str) -> dict:
     the price action to a narrative and invent an identity that then cascaded
     through every downstream agent.
 
-    Best-effort by design: if yfinance is unavailable, rate-limited, or doesn't
-    recognise the ticker, we return ``{}`` and the caller falls back to
+    Best-effort by design: if the data source is unavailable, rate-limited, or
+    doesn't recognise the ticker, we return ``{}`` and the caller falls back to
     ticker-only context rather than failing before analysis starts. Cached so
     the lookup happens at most once per ticker per process.
 
     The symbol is normalized first (e.g. ``XAUUSD`` -> ``GC=F``) so identity
     resolves for the same instrument the price path actually fetches (#983).
+
+    For A-share tickers, uses AKShare (EastMoney) instead of yfinance, since
+    yfinance is inaccessible from mainland China.
     """
+    from tradingagents.dataflows.market_utils import is_a_share
     from tradingagents.dataflows.symbol_utils import normalize_symbol
 
+    normalized = normalize_symbol(ticker)
+
+    if is_a_share(normalized):
+        return _resolve_a_share_identity(normalized)
+
     try:
-        info = yf.Ticker(normalize_symbol(ticker)).info or {}
+        info = yf.Ticker(normalized).info or {}
     except Exception as exc:  # noqa: BLE001 — fail open, never block the run
         logger.debug("Could not resolve instrument identity for %s: %s", ticker, exc)
         return {}
@@ -116,6 +125,43 @@ def resolve_instrument_identity(ticker: str) -> dict:
         value = _clean_identity_value(info.get(source_key))
         if value:
             identity[target_key] = value
+    return identity
+
+
+def _resolve_a_share_identity(normalized: str) -> dict:
+    """Resolve A-share company identity via AKShare (EastMoney)."""
+    try:
+        import akshare as ak
+    except ImportError:
+        logger.debug("akshare not installed, cannot resolve A-share identity for %s", normalized)
+        return {}
+
+    from tradingagents.dataflows.market_utils import (
+        a_share_to_akshare_symbol,
+        get_board_name,
+    )
+
+    code = a_share_to_akshare_symbol(normalized)
+    identity: dict[str, str] = {}
+
+    try:
+        from tradingagents.dataflows.retry import call_with_retry
+
+        df = call_with_retry(ak.stock_individual_info_em, symbol=code)
+        if df is not None and not df.empty:
+            info_map = dict(zip(df.iloc[:, 0], df.iloc[:, 1], strict=False))
+            name = _clean_identity_value(str(info_map.get("股票简称", "")))
+            if name:
+                identity["company_name"] = name
+            industry = _clean_identity_value(str(info_map.get("行业", "")))
+            if industry:
+                identity["industry"] = industry
+                identity["sector"] = industry
+            identity["exchange"] = get_board_name(normalized)
+            identity["quote_type"] = "EQUITY"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AKShare identity resolution failed for %s: %s", normalized, exc)
+
     return identity
 
 

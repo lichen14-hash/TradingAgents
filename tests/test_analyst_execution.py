@@ -15,7 +15,6 @@ class AnalystExecutionPlanTests(unittest.TestCase):
         self.assertEqual([spec.key for spec in plan.specs], ["news", "market"])
         self.assertEqual(plan.concurrency_limit, 2)
         self.assertEqual(plan.specs[0].agent_node, "News Analyst")
-        self.assertEqual(plan.specs[0].tool_node, "tools_news")
         self.assertEqual(plan.specs[0].clear_node, "Msg Clear News")
 
     def test_rejects_unknown_analyst_keys(self):

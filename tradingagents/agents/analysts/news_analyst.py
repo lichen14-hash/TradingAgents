@@ -1,13 +1,11 @@
+from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
-    get_global_news,
     get_instrument_context_from_state,
     get_language_instruction,
-    get_macro_indicators,
-    get_news,
-    get_prediction_markets,
 )
+from tradingagents.datacollector.schema import DataBundle
 
 
 def create_news_analyst(llm):
@@ -17,16 +15,38 @@ def create_news_analyst(llm):
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
 
-        tools = [
-            get_news,
-            get_global_news,
-            get_macro_indicators,
-            get_prediction_markets,
-        ]
+        bundle = DataBundle.model_validate(state["data_bundle"])
+        n = bundle.news
+
+        ticker_news_block = n.ticker_news if n else "<unavailable>"
+        global_news_block = n.global_news if n else "<unavailable>"
+        insider_block = n.insider_transactions if n else "<unavailable>"
+
+        macro_block = "<unavailable>"
+        if n and n.macro_indicators:
+            macro_block = "\n\n".join(
+                f"### {name}\n{data}" for name, data in n.macro_indicators.items()
+            )
+
+        prediction_block = "<unavailable>"
+        if n and n.prediction_markets:
+            prediction_block = "\n\n".join(
+                f"### {query}\n{data}" for query, data in n.prediction_markets.items()
+            )
 
         system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for {asset_label}-specific or targeted news searches, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            f"You are a news researcher tasked with analyzing recent news and trends over the past week."
+            f" Please write a comprehensive report of the current state of the world that is relevant"
+            f" for trading and macroeconomics for this {asset_label}."
+            f" The following pre-fetched data has been collected for you.\n\n"
+            f"<ticker_news>\n{ticker_news_block}\n</ticker_news>\n\n"
+            f"<global_news>\n{global_news_block}\n</global_news>\n\n"
+            f"<insider_transactions>\n{insider_block}\n</insider_transactions>\n\n"
+            f"<macro_indicators>\n{macro_block}\n</macro_indicators>\n\n"
+            f"<prediction_markets>\n{prediction_block}\n</prediction_markets>\n\n"
+            "Provide specific, actionable insights with supporting evidence to help traders"
+            " make informed decisions. Make sure to append a Markdown table at the end of"
+            " the report to organize key points in the report, organized and easy to read."
             + get_language_instruction()
         )
 
@@ -35,12 +55,9 @@ def create_news_analyst(llm):
                 (
                     "system",
                     "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
+                    "\n{system_message}"
                     "For your reference, the current date is {current_date}. {instrument_context}",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
@@ -48,20 +65,15 @@ def create_news_analyst(llm):
         )
 
         prompt = prompt.partial(system_message=system_message)
-        prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        chain = prompt | llm.bind_tools(tools)
-        result = chain.invoke(state["messages"])
-
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        formatted_messages = prompt.format_messages(messages=state["messages"])
+        result = llm.invoke(formatted_messages)
+        report = result.content
 
         return {
-            "messages": [result],
+            "messages": [AIMessage(content=report)],
             "news_report": report,
         }
 

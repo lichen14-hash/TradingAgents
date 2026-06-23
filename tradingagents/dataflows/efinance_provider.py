@@ -1,26 +1,28 @@
-"""Sina Finance data provider for Chinese-accessible stock data.
+"""efinance data provider for Chinese A-share market data.
 
-Sina Finance APIs are accessible from mainland China where Yahoo Finance
-is blocked.  This module provides OHLCV price data and technical indicators
-for US-listed stocks via Sina's public US stock API.
+efinance wraps EastMoney's API with a simpler, more stable interface than
+AKShare. While both use the same upstream data, efinance's API surface rarely
+changes, making it a useful last-resort OHLCV fallback when AKShare's
+interface breaks after an upgrade.
+
+Install: ``pip install efinance`` or ``pip install "tradingagents[china]"``
 """
 
-import json
+from __future__ import annotations
+
 import logging
 import os
 from datetime import datetime
 from typing import Annotated
 
 import pandas as pd
-import requests
 from stockstats import wrap
 
 from .config import get_config
 from .errors import NoMarketDataError
-from .market_utils import a_share_to_sina_symbol, is_a_share
+from .market_utils import a_share_to_akshare_symbol
 from .retry import call_with_retry
 from .stockstats_utils import (
-    MAX_OHLCV_STALE_DAYS,
     MAX_OHLCV_STALE_DAYS_CN,
     _assert_ohlcv_not_stale,
     _clean_dataframe,
@@ -29,77 +31,43 @@ from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
-REQUEST_TIMEOUT = 30
-
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Referer": "https://finance.sina.com.cn",
+_COL_MAP = {
+    "日期": "Date",
+    "开盘": "Open",
+    "最高": "High",
+    "最低": "Low",
+    "收盘": "Close",
+    "成交量": "Volume",
 }
 
 
-def _fetch_a_share_daily_klines(symbol: str) -> list[dict]:
-    """Fetch A-share daily OHLCV data from Sina Finance CN stock API."""
-    sina_sym = a_share_to_sina_symbol(symbol)
-    url = (
-        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php"
-        "/CN_MarketData.getKLineData"
-    )
-    params = {"symbol": sina_sym, "scale": "240", "ma": "no", "datalen": "5000"}
-
-    r = call_with_retry(requests.get, url, params=params, headers=_HEADERS, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-
-    data = json.loads(r.text)
-    if not data:
-        return []
-
-    rows = []
-    for k in data:
-        rows.append({
-            "d": k.get("day", k.get("d", "")),
-            "o": k.get("open", k.get("o", "0")),
-            "h": k.get("high", k.get("h", "0")),
-            "l": k.get("low", k.get("l", "0")),
-            "c": k.get("close", k.get("c", "0")),
-            "v": k.get("volume", k.get("v", "0")),
-        })
-    return rows
+def _get_ef():
+    """Lazy import efinance to allow graceful degradation when not installed."""
+    try:
+        import efinance as ef
+        return ef
+    except ImportError as exc:
+        raise ImportError(
+            "efinance is not installed. Install with: pip install efinance "
+            "or pip install 'tradingagents[china]'"
+        ) from exc
 
 
-def _fetch_us_daily_klines(symbol: str) -> list[dict]:
-    """Fetch US stock daily OHLCV data from Sina Finance US stock API."""
-    sym = symbol.upper()
-    url = (
-        f"https://stock.finance.sina.com.cn/usstock/api/jsonp_v2.php"
-        f"/var%20_{sym}/US_MinKService.getDailyK"
-    )
-    params = {"symbol": sym, "_": "1"}
+# ---------------------------------------------------------------------------
+# OHLCV
+# ---------------------------------------------------------------------------
 
-    r = call_with_retry(requests.get, url, params=params, headers=_HEADERS, timeout=REQUEST_TIMEOUT)
-    r.raise_for_status()
-
-    text = r.text
-    start = text.index("(")
-    end = text.rindex(")")
-    return json.loads(text[start + 1 : end])
-
-
-def _fetch_daily_klines(symbol: str) -> list[dict]:
-    """Fetch daily OHLCV data from Sina Finance, routing by market."""
-    if is_a_share(symbol):
-        return _fetch_a_share_daily_klines(symbol)
-    return _fetch_us_daily_klines(symbol)
-
-
-def _load_ohlcv_sina(symbol: str, curr_date: str) -> pd.DataFrame:
-    """Fetch and cache Sina OHLCV data, filtered to prevent look-ahead bias."""
-    safe_symbol = safe_ticker_component(symbol.upper())
+def _load_ohlcv_efinance(symbol: str, curr_date: str) -> pd.DataFrame:
+    """Fetch and cache efinance A-share daily OHLCV, filtered for look-ahead bias."""
+    ef = _get_ef()
+    code = a_share_to_akshare_symbol(symbol)
+    safe_symbol = safe_ticker_component(symbol)
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
     today_str = datetime.now().strftime("%Y-%m-%d")
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-Sina-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-efinance-daily-{today_str}.csv"
     )
 
     data = None
@@ -109,40 +77,43 @@ def _load_ohlcv_sina(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        klines = _fetch_daily_klines(symbol)
-        if not klines:
-            raise NoMarketDataError(symbol, symbol, "Sina returned no data")
+        df = call_with_retry(
+            ef.stock.get_quote_history,
+            code,
+            beg="20200101",
+            end=datetime.now().strftime("%Y%m%d"),
+        )
+        if df is None or df.empty:
+            raise NoMarketDataError(symbol, symbol, "efinance returned no data")
 
-        rows = []
-        for k in klines:
-            rows.append(
-                {
-                    "Date": k["d"],
-                    "Open": float(k["o"]),
-                    "High": float(k["h"]),
-                    "Low": float(k["l"]),
-                    "Close": float(k["c"]),
-                    "Volume": int(k["v"]),
-                }
-            )
-        data = pd.DataFrame(rows)
+        df = df.rename(columns=_COL_MAP)
+        keep = [c for c in ("Date", "Open", "High", "Low", "Close", "Volume") if c in df.columns]
+        if not keep or "Close" not in df.columns:
+            raise NoMarketDataError(symbol, symbol, "efinance returned unexpected columns")
+
+        data = df[keep].copy()
+        for col in ("Open", "High", "Low", "Close"):
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors="coerce")
+        data["Volume"] = pd.to_numeric(data["Volume"], errors="coerce").fillna(0).astype(int)
         data.to_csv(cache_file, index=False, encoding="utf-8")
 
     data = _clean_dataframe(data)
     curr_date_dt = pd.to_datetime(curr_date)
     data = data[data["Date"] <= curr_date_dt]
-    stale_limit = MAX_OHLCV_STALE_DAYS_CN if is_a_share(symbol) else MAX_OHLCV_STALE_DAYS
-    _assert_ohlcv_not_stale(data, curr_date, symbol, symbol, max_stale_days=stale_limit)
+    _assert_ohlcv_not_stale(
+        data, curr_date, symbol, symbol, max_stale_days=MAX_OHLCV_STALE_DAYS_CN,
+    )
     return data
 
 
 def get_stock_data(
-    symbol: Annotated[str, "ticker symbol of the company"],
+    symbol: Annotated[str, "A-share ticker symbol (600519.SS, 300750.SZ)"],
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ) -> str:
-    """Get OHLCV stock data from Sina Finance."""
-    data = _load_ohlcv_sina(symbol, end_date)
+    """Get OHLCV stock data from efinance."""
+    data = _load_ohlcv_efinance(symbol, end_date)
 
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
@@ -163,19 +134,22 @@ def get_stock_data(
 
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
-    header += "# Data source: Sina Finance\n"
+    header += "# Data source: efinance (EastMoney)\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
     return header + csv_string
 
 
+# ---------------------------------------------------------------------------
+# Technical Indicators
+# ---------------------------------------------------------------------------
+
 def get_indicators(
-    symbol: Annotated[str, "ticker symbol of the company"],
+    symbol: Annotated[str, "A-share ticker symbol"],
     indicator: Annotated[str, "technical indicator to compute"],
     curr_date: Annotated[str, "current trading date, YYYY-mm-dd"],
     look_back_days: Annotated[int, "how many days to look back"],
 ) -> str:
-    """Compute technical indicators from Sina Finance OHLCV data."""
+    """Compute technical indicators from efinance OHLCV data."""
     from dateutil.relativedelta import relativedelta
 
     best_ind_params = {
@@ -203,7 +177,7 @@ def get_indicators(
     curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     before = curr_date_dt - relativedelta(days=look_back_days)
 
-    data = _load_ohlcv_sina(symbol, curr_date)
+    data = _load_ohlcv_efinance(symbol, curr_date)
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
     df[indicator]

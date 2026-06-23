@@ -25,14 +25,24 @@ DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
 )
 
 
-def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
+def _verified_rows(
+    symbol: str,
+    curr_date: str,
+    preloaded_ohlcv: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """OHLCV on or before curr_date, date-sorted. Raises if nothing usable.
 
     ``load_ohlcv`` already normalizes the Date column and filters out
     look-ahead rows, but we re-apply the cutoff defensively — this is a
     verification path, so it must not trust its input to be pre-filtered.
+
+    When *preloaded_ohlcv* is supplied (already fetched by the collector),
+    it is used directly instead of calling ``load_ohlcv`` again.
     """
-    data = load_ohlcv(symbol, curr_date)
+    if preloaded_ohlcv is not None and not preloaded_ohlcv.empty:
+        data = preloaded_ohlcv.copy()
+    else:
+        data = load_ohlcv(symbol, curr_date)
     if data is None or data.empty:
         raise ValueError(f"No OHLCV data available for {symbol}.")
 
@@ -64,12 +74,13 @@ def build_verified_market_snapshot(
     curr_date: str,
     look_back_days: int = 30,
     indicators: Iterable[str] | None = None,
+    preloaded_ohlcv: pd.DataFrame | None = None,
 ) -> str:
     """Render a ground-truth snapshot: latest OHLCV row, indicators, recent closes."""
     # `df` keeps the original capitalized OHLCV columns (Open/High/Low/Close/
     # Volume); stockstats `wrap()` lowercases columns and adds indicator
     # columns, so read raw prices from `df` and indicators from `stock_df`.
-    df = _verified_rows(symbol, curr_date)
+    df = _verified_rows(symbol, curr_date, preloaded_ohlcv=preloaded_ohlcv)
     stock_df = wrap(df.copy())
 
     selected = tuple(indicators or DEFAULT_SNAPSHOT_INDICATORS)

@@ -24,8 +24,6 @@ See: https://github.com/TauricResearch/TradingAgents/issues/557
 See: https://github.com/TauricResearch/TradingAgents/issues/796
 """
 
-from datetime import datetime, timedelta
-
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -33,18 +31,13 @@ from tradingagents.agents.schemas import SentimentReport, render_sentiment_repor
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
-    get_news,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
-from tradingagents.dataflows.reddit import fetch_reddit_posts
-from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
-
-
-def _seven_days_back(trade_date: str) -> str:
-    return (datetime.strptime(trade_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+from tradingagents.datacollector.schema import DataBundle
+from tradingagents.dataflows.market_utils import is_a_share
 
 
 def create_sentiment_analyst(llm):
@@ -60,15 +53,16 @@ def create_sentiment_analyst(llm):
     def sentiment_analyst_node(state):
         ticker = state["company_of_interest"]
         end_date = state["trade_date"]
-        start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
 
-        # Pre-fetch all three sources. Each fetcher degrades gracefully and
-        # returns a string (no exceptions surface from here), so the LLM
-        # always sees something — either real data or a clear placeholder.
-        news_block = get_news.func(ticker, start_date, end_date)
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        bundle = DataBundle.model_validate(state["data_bundle"])
+        sentiment = bundle.sentiment
+        news_block = sentiment.ticker_news if sentiment else "<unavailable>"
+        stocktwits_block = sentiment.stocktwits if sentiment else "<unavailable>"
+        reddit_block = sentiment.reddit if sentiment else "<unavailable>"
+
+        from datetime import datetime, timedelta
+        start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -128,26 +122,49 @@ def _build_system_message(
     reddit_block: str,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
+    a_share = is_a_share(ticker)
+
+    if a_share:
+        news_label = "News headlines — EastMoney (东方财富), past 7 days"
+        news_desc = "Chinese financial news. Institutional framing. Fact-driven, slower-moving signal."
+        social_a_label = "EastMoney Guba (东方财富股吧) — retail investor forum"
+        social_a_desc = "Fast-moving signal. Includes popularity ranking, bullish/bearish sentiment ratios from the Guba community, and hot-topic indicators."
+        social_b_label = "Sina Finance news (新浪财经) — financial news and commentary, past 7 days"
+        social_b_desc = "Chinese financial media coverage. Engagement signal via article source credibility and headline framing."
+        tip_social_a = "1. **Read the Guba bullish/bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Hot rank indicates attention level."
+        tip_divergence = "2. **Look for cross-source divergences.** If EastMoney news framing is bearish but Guba community is overwhelmingly bullish, that mismatch is itself a signal."
+        tip_social_b = "3. **Weight Sina Finance articles by source credibility.** State media (新华社, 央视) carry more weight than blog posts. Read headlines for context."
+    else:
+        news_label = "News headlines — Yahoo Finance, past 7 days"
+        news_desc = "Institutional framing. Fact-driven, slower-moving signal."
+        social_a_label = "StockTwits messages — retail-trader social platform indexed by cashtag"
+        social_a_desc = "Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body."
+        social_b_label = "Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)"
+        social_b_desc = "Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term)."
+        tip_social_a = "1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone."
+        tip_divergence = "2. **Look for cross-source divergences.** If news framing is bearish but StockTwits is overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious)."
+        tip_social_b = "3. **Weight Reddit posts by engagement.** A 400-upvote / 200-comment thread reflects community attention; a 3-upvote post is noise. Read the body excerpts for context — the title alone often misleads."
+
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
 
 ## Data sources (pre-fetched, in this prompt)
 
-### News headlines — Yahoo Finance, past 7 days
-Institutional framing. Fact-driven, slower-moving signal.
+### {news_label}
+{news_desc}
 
 <start_of_news>
 {news_block}
 <end_of_news>
 
-### StockTwits messages — retail-trader social platform indexed by cashtag
-Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body.
+### {social_a_label}
+{social_a_desc}
 
 <start_of_stocktwits>
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+### {social_b_label}
+{social_b_desc}
 
 <start_of_reddit>
 {reddit_block}
@@ -155,17 +172,17 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 ## How to analyze this data (best practices)
 
-1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone.
+{tip_social_a}
 
-2. **Look for cross-source divergences.** If news framing is bearish but StockTwits is overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
+{tip_divergence}
 
-3. **Weight Reddit posts by engagement.** A 400-upvote / 200-comment thread reflects community attention; a 3-upvote post is noise. Read the body excerpts for context — the title alone often misleads.
+{tip_social_b}
 
-4. **Distinguish opinion from event.** A news headline ("Nvidia announces $500M Corning deal") is an event; a StockTwits post ("buying NVDA, this is going to moon") is opinion. Both are inputs but should be weighted differently in your conclusions.
+4. **Distinguish opinion from event.** A news headline is an event; a social-media post is opinion. Both are inputs but should be weighted differently in your conclusions.
 
 5. **Identify recurring narrative themes.** What topic keeps coming up across sources? That's the dominant narrative driving current sentiment.
 
-6. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative. If the sources are silent on a given subreddit, say so.
+6. **Be honest about data limits.** If a source returned only a handful of items, or returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative.
 
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 
