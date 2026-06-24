@@ -76,11 +76,9 @@ CN_MACRO_INDICATORS: tuple[str, ...] = (
 )
 
 CN_PREDICTION_QUERIES: tuple[str, ...] = (
-    "PBOC rate cut",
-    "China recession",
-    "China property crisis",
-    "US-China trade war",
-    "China tech regulation",
+    "northbound_flow",
+    "margin_trading",
+    "top_institutional",
 )
 
 CN_GLOBAL_NEWS_QUERIES: list[str] = [
@@ -89,6 +87,34 @@ CN_GLOBAL_NEWS_QUERIES: list[str] = [
     "A股 沪深 市场",
     "中美 贸易 关税",
     "中国 房地产 市场",
+]
+
+HK_MACRO_INDICATORS: tuple[str, ...] = (
+    "hk_cpi",
+    "hk_ppi",
+    "hk_unemployment",
+    "hk_gdp",
+    "hk_gdp_rate",
+    "hk_trade_balance",
+    "cn_pmi_mfg",
+    "cn_cpi",
+    "cn_gdp",
+    "cn_m2",
+    "cn_trade_balance",
+)
+
+HK_PREDICTION_QUERIES: tuple[str, ...] = (
+    "southbound_flow",
+    "hk_connect_summary",
+    "ah_premium",
+)
+
+HK_GLOBAL_NEWS_QUERIES: list[str] = [
+    "香港 金管局 利率",
+    "港股 恒生指数 市场",
+    "中国 GDP 经济增长 展望",
+    "中美 贸易 关税",
+    "香港 房地产 楼市",
 ]
 
 BUNDLE_VERSION = "1.0"

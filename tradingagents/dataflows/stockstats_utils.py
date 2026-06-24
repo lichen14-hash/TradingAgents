@@ -161,7 +161,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        from .market_utils import is_a_share
+        from .market_utils import is_a_share, is_hk_stock
 
         if is_a_share(canonical):
             _a_share_loaders = [
@@ -199,6 +199,33 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
                 downloaded = _ensure_date_column(downloaded.reset_index())
                 if downloaded.empty or "Close" not in downloaded.columns:
                     raise NoMarketDataError(symbol, canonical, "No OHLCV data from any vendor") from None
+        elif is_hk_stock(canonical):
+            _hk_loaders = [
+                ("HK-AKShare", lambda: __import__(
+                    "tradingagents.dataflows.hk_akshare_provider", fromlist=["_load_ohlcv_hk"]
+                )._load_ohlcv_hk(canonical, curr_date)),
+                ("efinance", lambda: __import__(
+                    "tradingagents.dataflows.efinance_provider", fromlist=["_load_ohlcv_efinance"]
+                )._load_ohlcv_efinance(canonical, curr_date)),
+            ]
+            downloaded = None
+            for loader_name, loader_fn in _hk_loaders:
+                try:
+                    logger.info("Loading HK OHLCV for %s via %s", symbol, loader_name)
+                    data = loader_fn()
+                    data.to_csv(data_file, index=False, encoding="utf-8")
+                    break
+                except Exception:
+                    logger.info("%s unavailable for %s, trying next provider", loader_name, symbol)
+            else:
+                logger.info("All HK providers unavailable for %s, falling back to yfinance", symbol)
+                downloaded = yf_retry(lambda: yf.download(
+                    canonical, start=start_str, end=end_str,
+                    multi_level_index=False, progress=False, auto_adjust=True,
+                ))
+                downloaded = _ensure_date_column(downloaded.reset_index())
+                if downloaded.empty or "Close" not in downloaded.columns:
+                    raise NoMarketDataError(symbol, canonical, "No OHLCV data from any vendor") from None
         else:
             try:
                 downloaded = yf_retry(lambda: yf.download(
@@ -226,8 +253,8 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # Filter to curr_date to prevent look-ahead bias in backtesting
     data = data[data["Date"] <= curr_date_dt]
 
-    from .market_utils import is_a_share as _is_a_share
-    stale_limit = MAX_OHLCV_STALE_DAYS_CN if _is_a_share(canonical) else MAX_OHLCV_STALE_DAYS
+    from .market_utils import is_a_share as _is_a_share, is_hk_stock as _is_hk
+    stale_limit = MAX_OHLCV_STALE_DAYS_CN if (_is_a_share(canonical) or _is_hk(canonical)) else MAX_OHLCV_STALE_DAYS
     _assert_ohlcv_not_stale(data, curr_date, symbol, canonical, max_stale_days=stale_limit)
 
     return data

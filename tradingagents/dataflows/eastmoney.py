@@ -14,10 +14,16 @@ from typing import Annotated
 
 import pandas as pd
 
-from .market_utils import a_share_to_akshare_symbol
+from .market_utils import a_share_to_akshare_symbol, hk_to_akshare_symbol, is_hk_stock
 from .retry import call_with_retry
 
 logger = logging.getLogger(__name__)
+
+
+def _to_akshare_code(ticker: str) -> str:
+    if is_hk_stock(ticker):
+        return hk_to_akshare_symbol(ticker)
+    return a_share_to_akshare_symbol(ticker)
 
 
 def _get_ak():
@@ -41,7 +47,7 @@ def fetch_eastmoney_guba(
     sentiment analyst can process it without modification.
     """
     ak = _get_ak()
-    code = a_share_to_akshare_symbol(ticker)
+    code = _to_akshare_code(ticker)
 
     lines = [f"# EastMoney Guba (股吧) sentiment for {ticker.upper()}\n"]
     lines.append("# Source: guba.eastmoney.com via AKShare\n\n")
@@ -114,7 +120,7 @@ def fetch_sina_finance_comments(
     sentiment analyst can process it without modification.
     """
     ak = _get_ak()
-    code = a_share_to_akshare_symbol(ticker)
+    code = _to_akshare_code(ticker)
 
     lines = [f"# Sina Finance news sentiment for {ticker.upper()}\n"]
     lines.append("# Source: Sina Finance via AKShare\n\n")

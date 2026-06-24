@@ -7,8 +7,11 @@ from tradingagents.dataflows.market_utils import (
     a_share_to_sina_symbol,
     detect_exchange,
     get_board_name,
+    hk_to_akshare_symbol,
     is_a_share,
+    is_hk_stock,
     normalize_a_share_symbol,
+    normalize_hk_symbol,
 )
 
 
@@ -123,7 +126,70 @@ class TestGetBoardName:
         ("002594", "深交所主板"),
         ("300750.SZ", "创业板"),
         ("301269", "创业板"),
+        ("00700.HK", "港股"),
+        ("hk09988", "港股"),
         ("AAPL", "Unknown"),
     ])
     def test_board_names(self, ticker, expected):
         assert get_board_name(ticker) == expected
+
+
+class TestIsHkStock:
+    @pytest.mark.parametrize("ticker", [
+        "00700.HK", "0700.HK", "700.HK",
+        "09988.HK", "9988.hk",
+        "hk00700", "HK00700",
+        "hk0700", "HK9988",
+    ])
+    def test_positive(self, ticker):
+        assert is_hk_stock(ticker), f"{ticker} should be detected as HK stock"
+
+    @pytest.mark.parametrize("ticker", [
+        "AAPL", "BABA", "SPY",
+        "600519.SS", "000001.SZ",
+        "sh600519", "sz300750",
+        "600519", "000001",
+        "^HSI", "BTC-USD",
+        "", "123456",
+    ])
+    def test_negative(self, ticker):
+        assert not is_hk_stock(ticker), f"{ticker} should NOT be detected as HK stock"
+
+    def test_a_share_not_hk(self):
+        assert not is_hk_stock("00700.SS")
+        assert is_a_share("600519.SS")
+        assert not is_hk_stock("600519.SS")
+
+
+class TestNormalizeHkSymbol:
+    @pytest.mark.parametrize("raw,expected", [
+        ("00700.HK", "00700.HK"),
+        ("0700.HK", "00700.HK"),
+        ("700.HK", "00700.HK"),
+        ("hk00700", "00700.HK"),
+        ("HK0700", "00700.HK"),
+        ("hk700", "00700.HK"),
+        ("09988.HK", "09988.HK"),
+        ("9988.hk", "09988.HK"),
+    ])
+    def test_normalization(self, raw, expected):
+        assert normalize_hk_symbol(raw) == expected
+
+    def test_non_hk_raises(self):
+        with pytest.raises(ValueError):
+            normalize_hk_symbol("AAPL")
+
+    def test_a_share_raises(self):
+        with pytest.raises(ValueError):
+            normalize_hk_symbol("600519.SS")
+
+
+class TestHkToAkshareSymbol:
+    @pytest.mark.parametrize("ticker,expected", [
+        ("00700.HK", "00700"),
+        ("09988.HK", "09988"),
+        ("hk00700", "00700"),
+        ("0700.HK", "00700"),
+    ])
+    def test_conversion(self, ticker, expected):
+        assert hk_to_akshare_symbol(ticker) == expected

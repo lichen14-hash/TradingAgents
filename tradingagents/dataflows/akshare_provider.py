@@ -19,7 +19,7 @@ from stockstats import wrap
 
 from .config import get_config
 from .errors import NoMarketDataError
-from .market_utils import a_share_to_akshare_symbol
+from .market_utils import a_share_to_akshare_symbol, is_etf
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
 from .utils import safe_ticker_component
@@ -74,15 +74,26 @@ def _load_ohlcv_akshare(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
-        df = call_with_retry(
-            ak.stock_zh_a_hist,
-            symbol=code,
-            period="daily",
-            start_date="20200101",
-            end_date=datetime.now().strftime("%Y%m%d"),
-            adjust="qfq",
-            timeout=REQUEST_TIMEOUT,
-        )
+        if is_etf(symbol):
+            df = call_with_retry(
+                ak.fund_etf_hist_em,
+                symbol=code,
+                period="daily",
+                start_date="20200101",
+                end_date=datetime.now().strftime("%Y%m%d"),
+                adjust="qfq",
+                timeout=REQUEST_TIMEOUT,
+            )
+        else:
+            df = call_with_retry(
+                ak.stock_zh_a_hist,
+                symbol=code,
+                period="daily",
+                start_date="20200101",
+                end_date=datetime.now().strftime("%Y%m%d"),
+                adjust="qfq",
+                timeout=REQUEST_TIMEOUT,
+            )
         if df is None or df.empty:
             raise NoMarketDataError(symbol, symbol, "AKShare returned no data")
 

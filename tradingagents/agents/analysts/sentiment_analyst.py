@@ -37,7 +37,7 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.datacollector.schema import DataBundle
-from tradingagents.dataflows.market_utils import is_a_share
+from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
 
 
 def create_sentiment_analyst(llm):
@@ -123,16 +123,21 @@ def _build_system_message(
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     a_share = is_a_share(ticker)
+    hk_stock = is_hk_stock(ticker)
 
-    if a_share:
-        news_label = "News headlines — EastMoney (东方财富), past 7 days"
+    if a_share or hk_stock:
+        market_name = "港股" if hk_stock else "A股"
+        news_label = f"News headlines — EastMoney (东方财富), past 7 days ({market_name})"
         news_desc = "Chinese financial news. Institutional framing. Fact-driven, slower-moving signal."
-        social_a_label = "EastMoney Guba (东方财富股吧) — retail investor forum"
+        social_a_label = f"EastMoney Guba (东方财富股吧) — retail investor forum ({market_name})"
         social_a_desc = "Fast-moving signal. Includes popularity ranking, bullish/bearish sentiment ratios from the Guba community, and hot-topic indicators."
         social_b_label = "Sina Finance news (新浪财经) — financial news and commentary, past 7 days"
         social_b_desc = "Chinese financial media coverage. Engagement signal via article source credibility and headline framing."
         tip_social_a = "1. **Read the Guba bullish/bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Hot rank indicates attention level."
-        tip_divergence = "2. **Look for cross-source divergences.** If EastMoney news framing is bearish but Guba community is overwhelmingly bullish, that mismatch is itself a signal."
+        if hk_stock:
+            tip_divergence = "2. **Look for cross-source divergences.** If EastMoney news framing is bearish but Guba community is overwhelmingly bullish, that mismatch is itself a signal. For HK stocks, also watch southbound capital flow direction vs. sentiment."
+        else:
+            tip_divergence = "2. **Look for cross-source divergences.** If EastMoney news framing is bearish but Guba community is overwhelmingly bullish, that mismatch is itself a signal."
         tip_social_b = "3. **Weight Sina Finance articles by source credibility.** State media (新华社, 央视) carry more weight than blog posts. Read headlines for context."
     else:
         news_label = "News headlines — Yahoo Finance, past 7 days"

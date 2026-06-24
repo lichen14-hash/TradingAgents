@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradingAgents 分析平台</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       background: #f5f7fa; color: #1a1a2e; line-height: 1.6; min-height: 100vh; }
+
+.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+           color: white; padding: 32px 0; text-align: center; }
+.header h1 { font-size: 26px; font-weight: 700; }
+.header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+
+.container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+
+/* Input section */
+.input-card { background: white; border-radius: 12px; padding: 28px;
+              box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; }
+.input-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.input-group { flex: 1; min-width: 140px; }
+.input-group label { display: block; font-size: 13px; color: #666; margin-bottom: 6px; font-weight: 600; }
+.input-group input { width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 8px;
+                     font-size: 15px; transition: border-color 0.2s; outline: none; }
+.input-group input:focus { border-color: #667eea; }
+.btn-analyze { padding: 10px 28px; background: linear-gradient(135deg, #667eea, #764ba2);
+               color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
+               cursor: pointer; transition: opacity 0.2s; white-space: nowrap; }
+.btn-analyze:hover { opacity: 0.9; }
+.btn-analyze:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Progress section */
+.progress-card { background: white; border-radius: 12px; padding: 28px;
+                 box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; display: none; }
+.progress-card.active { display: block; }
+.progress-title { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+.steps { list-style: none; }
+.steps li { display: flex; align-items: center; gap: 12px; padding: 8px 0;
+            font-size: 14px; color: #999; transition: color 0.3s; }
+.steps li.done { color: #28a745; }
+.steps li.active { color: #667eea; font-weight: 600; }
+.steps li.error { color: #dc3545; }
+.step-icon { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #ddd;
+             display: flex; align-items: center; justify-content: center; font-size: 12px;
+             flex-shrink: 0; transition: all 0.3s; }
+.steps li.done .step-icon { background: #28a745; border-color: #28a745; color: white; }
+.steps li.active .step-icon { border-color: #667eea; animation: pulse 1.2s infinite; }
+.steps li.error .step-icon { background: #dc3545; border-color: #dc3545; color: white; }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(102,126,234,0.4); }
+                   50% { box-shadow: 0 0 0 8px rgba(102,126,234,0); } }
+
+/* Result section */
+.result-card { background: white; border-radius: 12px; padding: 28px;
+               box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px;
+               display: none; text-align: center; }
+.result-card.active { display: block; }
+.signal { font-size: 48px; font-weight: 800; margin: 16px 0; }
+.signal.buy { color: #dc3545; }
+.signal.sell { color: #28a745; }
+.signal.hold { color: #ffc107; }
+.result-ticker { font-size: 18px; color: #666; }
+.result-btns { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
+.result-btns a { padding: 10px 24px; border-radius: 8px; text-decoration: none;
+                 font-size: 14px; font-weight: 600; }
+.btn-pdf { background: #667eea; color: white; }
+.btn-html { background: #f0f2f8; color: #333; }
+
+/* History section */
+.history-card { background: white; border-radius: 12px; padding: 28px;
+                box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+.history-title { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+.history-list { list-style: none; }
+.history-item { display: flex; align-items: center; justify-content: space-between;
+                padding: 12px 0; border-bottom: 1px solid #f0f0f0; flex-wrap: wrap; gap: 8px; }
+.history-item:last-child { border-bottom: none; }
+.history-info { flex: 1; }
+.history-info .ticker { font-weight: 600; font-size: 15px; }
+.history-info .meta { font-size: 12px; color: #999; }
+.history-signal { font-weight: 700; font-size: 14px; padding: 4px 12px; border-radius: 4px; }
+.history-signal.buy { background: #fde8e8; color: #dc3545; }
+.history-signal.sell { background: #e8f5e9; color: #28a745; }
+.history-signal.hold { background: #fff8e1; color: #f59e0b; }
+.history-actions a { font-size: 13px; color: #667eea; text-decoration: none; margin-left: 12px; }
+.history-actions a:hover { text-decoration: underline; }
+.empty-state { text-align: center; color: #999; padding: 32px; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>TradingAgents 分析平台</h1>
+  <p>AI 多智能体股票分析系统</p>
+</div>
+
+<div class="container">
+  <!-- Input -->
+  <div class="input-card">
+    <div class="input-row">
+      <div class="input-group" style="flex: 2;">
+        <label>股票代码</label>
+        <input type="text" id="ticker" placeholder="输入代码：688599、00700.HK 或 AAPL" autofocus>
+      </div>
+      <div class="input-group">
+        <label>分析日期</label>
+        <input type="date" id="date">
+      </div>
+      <button class="btn-analyze" id="btnAnalyze" onclick="startAnalysis()">开始分析</button>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-card" id="progressCard">
+    <div class="progress-title" id="progressTitle">正在分析...</div>
+    <ul class="steps" id="steps">
+      <li id="step-collecting"><span class="step-icon"></span>采集市场数据</li>
+      <li id="step-data_ready"><span class="step-icon"></span>数据准备完成</li>
+      <li id="step-market_report"><span class="step-icon"></span>市场分析师</li>
+      <li id="step-sentiment_report"><span class="step-icon"></span>社交媒体分析师</li>
+      <li id="step-news_report"><span class="step-icon"></span>新闻分析师</li>
+      <li id="step-fundamentals_report"><span class="step-icon"></span>基本面分析师</li>
+      <li id="step-invest_debate"><span class="step-icon"></span>投资辩论</li>
+      <li id="step-trader"><span class="step-icon"></span>交易策略生成</li>
+      <li id="step-risk_debate"><span class="step-icon"></span>风控评估</li>
+      <li id="step-final_decision"><span class="step-icon"></span>最终决策</li>
+      <li id="step-generating"><span class="step-icon"></span>生成报告</li>
+      <li id="step-pdf"><span class="step-icon"></span>转换 PDF</li>
+    </ul>
+  </div>
+
+  <!-- Result -->
+  <div class="result-card" id="resultCard">
+    <div class="result-ticker" id="resultTicker"></div>
+    <div class="signal" id="resultSignal"></div>
+    <div class="result-btns" id="resultBtns"></div>
+  </div>
+
+  <!-- History -->
+  <div class="history-card">
+    <div class="history-title">历史报告</div>
+    <ul class="history-list" id="historyList">
+      <li class="empty-state">加载中...</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+// Set default date to today
+document.getElementById('date').value = new Date().toISOString().slice(0, 10);
+
+// Allow Enter key to trigger analysis
+document.getElementById('ticker').addEventListener('keydown', e => {
+  if (e.key === 'Enter') startAnalysis();
+});
+
+const STEP_ORDER = [
+  'collecting', 'data_ready',
+  'market_report', 'sentiment_report', 'news_report', 'fundamentals_report',
+  'invest_debate', 'trader', 'risk_debate', 'final_decision',
+  'generating', 'pdf'
+];
+
+let currentTaskId = null;
+let eventSource = null;
+
+async function startAnalysis() {
+  const ticker = document.getElementById('ticker').value.trim();
+  const date = document.getElementById('date').value;
+  if (!ticker) { alert('请输入股票代码'); return; }
+
+  const btn = document.getElementById('btnAnalyze');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+
+  // Reset progress
+  const progressCard = document.getElementById('progressCard');
+  progressCard.classList.add('active');
+  document.getElementById('resultCard').classList.remove('active');
+  document.querySelectorAll('.steps li').forEach(li => {
+    li.className = '';
+  });
+  // Show/hide fundamentals step based on ETF detection (simple heuristic)
+  const code = ticker.replace(/\.(SS|SZ)$/i, '').replace(/^(sh|sz)/i, '');
+  const isEtf = /^(510|511|512|513|515|516|517|518|560|561|562|563|588|589|159)\d{3}$/.test(code);
+  document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
+
+  try {
+    const resp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker, date }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      const msg = err.detail || '提交失败';
+      progressCard.classList.add('active');
+      document.getElementById('progressTitle').textContent = msg;
+      document.getElementById('progressTitle').style.color = '#e74c3c';
+      setTimeout(() => { document.getElementById('progressTitle').style.color = ''; }, 5000);
+      btn.disabled = false;
+      btn.textContent = '开始分析';
+      return;
+    }
+    const data = await resp.json();
+    currentTaskId = data.task_id;
+    document.getElementById('progressTitle').textContent =
+      `正在分析 ${data.ticker}...`;
+
+    // Start SSE
+    listenProgress(data.task_id);
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '开始分析';
+  }
+}
+
+function listenProgress(taskId) {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource(`/api/progress/${taskId}`);
+
+  const completedSteps = new Set();
+
+  eventSource.onmessage = function(e) {
+    const event = JSON.parse(e.data);
+    const stage = event.stage;
+
+    // Update title with resolved stock name
+    if (stage === 'init') {
+      document.getElementById('progressTitle').textContent = event.message + '...';
+      return;
+    }
+
+    if (stage === 'done') {
+      STEP_ORDER.forEach(s => markStep(s, 'done'));
+      showResult(taskId, event.message);
+      eventSource.close();
+      document.getElementById('btnAnalyze').disabled = false;
+      document.getElementById('btnAnalyze').textContent = '开始分析';
+      loadHistory();
+      return;
+    }
+
+    if (stage === 'error') {
+      document.getElementById('progressTitle').textContent = '分析失败';
+      const currentActive = document.querySelector('.steps li.active');
+      if (currentActive) {
+        currentActive.classList.remove('active');
+        currentActive.classList.add('error');
+      }
+      eventSource.close();
+      document.getElementById('btnAnalyze').disabled = false;
+      document.getElementById('btnAnalyze').textContent = '开始分析';
+      return;
+    }
+
+    // Skip stages without a UI element (e.g. "analyzing", "data_bundle")
+    const stageEl = document.getElementById('step-' + stage);
+    if (!stageEl) return;
+
+    // Mark all steps before this one as done
+    for (const s of STEP_ORDER) {
+      if (s === stage) break;
+      markStep(s, 'done');
+      completedSteps.add(s);
+    }
+    // Mark current as active
+    document.querySelectorAll('.steps li.active').forEach(li => {
+      if (li.id !== 'step-' + stage) {
+        li.classList.remove('active');
+        li.classList.add('done');
+      }
+    });
+    stageEl.className = 'active';
+  };
+
+  eventSource.onerror = function() {
+    // Connection lost — check if task completed
+    eventSource.close();
+    setTimeout(() => {
+      document.getElementById('btnAnalyze').disabled = false;
+      document.getElementById('btnAnalyze').textContent = '开始分析';
+    }, 1000);
+  };
+}
+
+function markStep(stepId, cls) {
+  const el = document.getElementById('step-' + stepId);
+  if (el && el.style.display !== 'none') {
+    el.className = cls;
+    if (cls === 'done') {
+      el.querySelector('.step-icon').innerHTML = '✓';
+    }
+  }
+}
+
+function showResult(taskId, signal) {
+  const card = document.getElementById('resultCard');
+  card.classList.add('active');
+  document.getElementById('progressTitle').textContent = '分析完成';
+
+  // Mark all visible steps as done
+  document.querySelectorAll('.steps li').forEach(li => {
+    if (li.style.display !== 'none') {
+      li.className = 'done';
+      li.querySelector('.step-icon').innerHTML = '✓';
+    }
+  });
+
+  const signalText = signal || 'Hold';
+  const signalEl = document.getElementById('resultSignal');
+  signalEl.textContent = signalText;
+  signalEl.className = 'signal ' + signalText.toLowerCase();
+
+  const tickerEl = document.getElementById('resultTicker');
+  tickerEl.textContent = document.getElementById('progressTitle').textContent.replace('分析完成', '').trim()
+    || document.getElementById('ticker').value;
+
+  const btns = document.getElementById('resultBtns');
+  btns.innerHTML = `
+    <a href="/api/report/${taskId}" class="btn-pdf" download>下载 PDF</a>
+    <a href="/api/report/${taskId}/html" class="btn-html" target="_blank">在线查看</a>
+  `;
+}
+
+async function loadHistory() {
+  try {
+    const resp = await fetch('/api/tasks');
+    const data = await resp.json();
+    const list = document.getElementById('historyList');
+
+    const completed = data.filter(t => t.status === 'done');
+    if (completed.length === 0) {
+      list.innerHTML = '<li class="empty-state">暂无历史报告</li>';
+      return;
+    }
+
+    list.innerHTML = completed.map(t => {
+      const signalCls = (t.signal || '').toLowerCase();
+      const actions = [];
+      if (t.has_pdf) actions.push(`<a href="/api/report/${t.task_id}" download>PDF</a>`);
+      if (t.has_html) actions.push(`<a href="/api/report/${t.task_id}/html" target="_blank">HTML</a>`);
+      return `<li class="history-item">
+        <div class="history-info">
+          <span class="ticker">${esc(t.name)} (${esc(t.ticker)})</span>
+          <div class="meta">${esc(t.created_at)}${t.date ? ' | ' + esc(t.date) : ''}</div>
+        </div>
+        ${t.signal ? `<span class="history-signal ${signalCls}">${esc(t.signal)}</span>` : ''}
+        <div class="history-actions">${actions.join('')}</div>
+      </li>`;
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load history:', e);
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+async function resumeActiveTask() {
+  try {
+    const resp = await fetch('/api/tasks');
+    const data = await resp.json();
+    const active = data.find(t =>
+      t.status !== 'done' && t.status !== 'failed' && !t.task_id.startsWith('hist-')
+    );
+    if (!active) return;
+
+    currentTaskId = active.task_id;
+
+    const btn = document.getElementById('btnAnalyze');
+    btn.disabled = true;
+    btn.textContent = '分析中...';
+
+    document.getElementById('ticker').value = active.ticker;
+    if (active.date) document.getElementById('date').value = active.date;
+
+    const progressCard = document.getElementById('progressCard');
+    progressCard.classList.add('active');
+    document.getElementById('resultCard').classList.remove('active');
+    document.querySelectorAll('.steps li').forEach(li => { li.className = ''; });
+
+    const code = active.ticker.replace(/\.HK$/i, '').replace(/\.(SS|SZ)$/i, '').replace(/^(sh|sz|hk)/i, '');
+    const isEtf = /^(510|511|512|513|515|516|517|518|560|561|562|563|588|589|159)\d{3}$/.test(code);
+    document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
+
+    document.getElementById('progressTitle').textContent =
+      `正在分析 ${active.name || active.ticker}...`;
+
+    listenProgress(active.task_id);
+  } catch (e) {
+    console.error('Failed to resume active task:', e);
+  }
+}
+
+// Load history and resume active task on page load
+loadHistory();
+resumeActiveTask();
+</script>
+</body>
+</html>

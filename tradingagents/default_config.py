@@ -133,8 +133,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "cn_housing_price", "cn_10y_treasury", "cn_1y_treasury", "cn_unemployment",
     ],
     "cn_prediction_queries": [
-        "PBOC rate cut", "China recession", "China property crisis",
-        "US-China trade war", "China tech regulation",
+        "northbound_flow", "margin_trading", "top_institutional",
     ],
     "cn_global_news_queries": [
         "央行货币政策 利率 中国",
@@ -142,6 +141,21 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "A股 沪深 市场",
         "中美 贸易 关税",
         "中国 房地产 市场",
+    ],
+    "hk_macro_indicators": [
+        "hk_cpi", "hk_ppi", "hk_unemployment", "hk_gdp", "hk_gdp_rate",
+        "hk_trade_balance",
+        "cn_pmi_mfg", "cn_cpi", "cn_gdp", "cn_m2", "cn_trade_balance",
+    ],
+    "hk_prediction_queries": [
+        "southbound_flow", "hk_connect_summary", "ah_premium",
+    ],
+    "hk_global_news_queries": [
+        "香港 金管局 利率",
+        "港股 恒生指数 市场",
+        "中国 GDP 经济增长 展望",
+        "中美 贸易 关税",
+        "香港 房地产 楼市",
     ],
     # Data vendor configuration
     # Category-level configuration (default for all tools in category).

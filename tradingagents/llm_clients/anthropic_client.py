@@ -1,10 +1,14 @@
+import logging
 import re
+import time
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
 
 from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
+
+logger = logging.getLogger(__name__)
 
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "api_key", "max_tokens", "temperature",
@@ -28,16 +32,41 @@ def _supports_effort(model: str) -> bool:
     return model_lc in _EFFORT_EXACT or bool(_EFFORT_PATTERN.match(model_lc))
 
 
+_PROXY_RATE_LIMIT_PATTERNS = ("MPE-429", "Too many tokens per day", "too many tokens")
+
+_RETRY_WAIT_SECONDS = 180  # 3 minutes
+
+
+def _is_proxy_rate_limit(exc: Exception) -> bool:
+    """Detect rate-limit errors disguised as HTTP 400 by API proxies."""
+    msg = str(exc)
+    return any(p in msg for p in _PROXY_RATE_LIMIT_PATTERNS)
+
+
 class NormalizedChatAnthropic(ChatAnthropic):
     """ChatAnthropic with normalized content output.
 
     Claude models with extended thinking or tool use return content as a
     list of typed blocks. This normalizes to string for consistent
     downstream handling.
+
+    Includes a one-shot 3-minute retry for proxy rate-limit errors
+    (e.g. IdealAb MPE-429) that arrive as HTTP 400 and bypass the SDK's
+    built-in 429 retry.
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        try:
+            return normalize_content(super().invoke(input, config, **kwargs))
+        except Exception as exc:
+            if not _is_proxy_rate_limit(exc):
+                raise
+            logger.warning(
+                "Proxy rate limit detected, retrying in %ds: %s",
+                _RETRY_WAIT_SECONDS, exc,
+            )
+            time.sleep(_RETRY_WAIT_SECONDS)
+            return normalize_content(super().invoke(input, config, **kwargs))
 
 
 class AnthropicClient(BaseLLMClient):
