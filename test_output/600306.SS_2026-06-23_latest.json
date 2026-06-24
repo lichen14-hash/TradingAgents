@@ -1,0 +1,95 @@
+{
+  "metadata": {
+    "ticker": "600306.SS",
+    "trade_date": "2026-06-23",
+    "original_trade_date": null,
+    "asset_type": "stock",
+    "collection_timestamp": "2026-06-24T04:37:26Z",
+    "selected_analysts": [
+      "fundamentals",
+      "market",
+      "news",
+      "social"
+    ],
+    "vendor_config": {
+      "data_vendors": {
+        "core_stock_apis": "sina,alpha_vantage",
+        "technical_indicators": "sina,alpha_vantage",
+        "fundamental_data": "alpha_vantage",
+        "news_data": "alpha_vantage",
+        "macro_data": "fred",
+        "prediction_markets": "polymarket"
+      },
+      "tool_vendors": {}
+    },
+    "bundle_version": "1.0"
+  },
+  "market": {
+    "stock_data": "NO_DATA_AVAILABLE: No usable market data for '600306.SS' from any configured vendor (latest row is 2024-06-19, 734 days before the requested 2026-06-23 (stale) — refusing to use it). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "indicators": {
+      "close_50_sma": "## CLOSE_50_SMA values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\n50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.",
+      "close_200_sma": "## CLOSE_200_SMA values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\n200 SMA: A long-term trend benchmark. Usage: Confirm overall market trend and identify golden/death cross setups. Tips: It reacts slowly; best for strategic trend confirmation rather than frequent trading entries.",
+      "close_10_ema": "## CLOSE_10_EMA values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\n10 EMA: A responsive short-term average. Usage: Capture quick shifts in momentum and potential entry points. Tips: Prone to noise in choppy markets; use alongside longer averages for filtering false signals.",
+      "macd": "NO_DATA_AVAILABLE: No usable market data for '600306.SS' from any configured vendor (latest row is 2024-06-19, 734 days before the requested 2026-06-23 (stale) — refusing to use it). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+      "macds": "NO_DATA_AVAILABLE: No usable market data for '600306.SS' from any configured vendor (latest row is 2024-06-19, 734 days before the requested 2026-06-23 (stale) — refusing to use it). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+      "macdh": "NO_DATA_AVAILABLE: No usable market data for '600306.SS' from any configured vendor (latest row is 2024-06-19, 734 days before the requested 2026-06-23 (stale) — refusing to use it). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+      "rsi": "## RSI values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\nRSI: Measures momentum to flag overbought/oversold conditions. Usage: Apply 70/30 thresholds and watch for divergence to signal reversals. Tips: In strong trends, RSI may remain extreme; always cross-check with trend analysis.",
+      "boll": "## BOLL values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\nBollinger Middle: A 20 SMA serving as the basis for Bollinger Bands. Usage: Acts as a dynamic benchmark for price movement. Tips: Combine with the upper and lower bands to effectively spot breakouts or reversals.",
+      "boll_ub": "## BOLL_UB values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\nBollinger Upper Band: Typically 2 standard deviations above the middle line. Usage: Signals potential overbought conditions and breakout zones. Tips: Confirm signals with other tools; prices may ride the band in strong trends.",
+      "boll_lb": "## BOLL_LB values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\nBollinger Lower Band: Typically 2 standard deviations below the middle line. Usage: Indicates potential oversold conditions. Tips: Use additional analysis to avoid false reversal signals.",
+      "atr": "## ATR values from 2026-05-24 to 2026-06-23:\n\nNo data available for the specified date range.\n\n\nATR: Averages true range to measure volatility. Usage: Set stop-loss levels and adjust position sizes based on current market volatility. Tips: It's a reactive measure, so use it as part of a broader risk management strategy.",
+      "vwma": "<unavailable: indicator:vwma: no data matching trade date 2026-06-23>",
+      "mfi": "NO_DATA_AVAILABLE: No usable market data for '600306.SS' from any configured vendor (latest row is 2024-06-19, 734 days before the requested 2026-06-23 (stale) — refusing to use it). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol."
+    },
+    "verified_snapshot": "<unavailable: NoMarketDataError: No market data for '600306.SS': No OHLCV data from any vendor>"
+  },
+  "sentiment": {
+    "ticker_news": "<unavailable: KeyError: 'code'>",
+    "stocktwits": "# EastMoney Guba (股吧) sentiment for 600306.SS\n\n# Source: guba.eastmoney.com via AKShare\n\n\n(No sentiment data available from EastMoney)\n",
+    "reddit": "# Sina Finance news sentiment for 600306.SS\n\n# Source: Sina Finance via AKShare\n\n\n(News data unavailable: 'code')\n"
+  },
+  "news": {
+    "ticker_news": "<unavailable: KeyError: 'code'>",
+    "global_news": "# China macro news around 2026-06-23\n\n# Source: CCTV Finance via AKShare\n\n\n- 《习近平党建文选》第一卷、第二卷出版发行\n  中共中央党史和文献研究院编辑的《习近平党建文选》第一卷、第二卷，近日由中央文献出版社出版，在全国发行。党的十八大以来，以习近平同志为核心的党中央围绕建设什么样的长期执政的马克思主义政党、怎样建设长期执政的马克思主义政党的重大时代课题，提出一系列新理念新思想新战略，形成习近平党建思想。习近平党建思想是\n\n- 【牢记初心使命 奋进复兴征程】弘扬西柏坡精神 走好新时代赶考路\n  西柏坡，一个永载中国革命史册的名字。在这里，党中央指挥了三大战役，召开了党的七届二中全会，孕育形成了西柏坡精神。77年前，党中央从这里出发“进京赶考”，开启了建设新中国的征程。如今，时代考卷常新，但中国共产党人“赶考”初心始终如一。历久弥新的西柏坡精神持续激励着中国共产党人在新时代的赶考路上踔厉奋发\n\n- 李强分别会见几内亚总理、哈萨克斯坦总理、韩国总理、蒙古国总理、黑山总理\n  6月23日，国务院总理李强在大连分别会见来华出席2026年夏季达沃斯论坛的几内亚总理乌里·巴、哈萨克斯坦总理别克捷诺夫、韩国总理金民锡、蒙古国总理乌其尔勒和黑山总理斯帕伊奇。李强表示，近些年，在习近平主席同五国领导人战略引领下，中国同五国关系持续深化发展，中方愿同五国一道继续努力，推动双边关系与合作\n\n- 十四届全国人大常委会第二十三次会议在京举行 审议商标法修订草案等 赵乐际主持\n  十四届全国人大常委会第二十三次会议23日上午在京举行第一次全体会议。赵乐际委员长主持。会议听取了全国人大宪法法律委副主任委员骆源作的关于商标法修订草案审议结果的报告。听取了宪法法律委副主任委员周光权作的关于注册会计师法修正草案审议结果的报告、关于南极活动与环境保护法草案修改情况的汇报。听取了宪法法律\n\n- 全国政协十四届常委会第十七次会议开幕 王沪宁主持 丁薛祥作报告\n  政协第十四届全国委员会常务委员会第十七次会议23日上午在京开幕，围绕“坚持高质量发展，推动经济持续健康发展和社会全面进步”协商议政。中共中央政治局常委、全国政协主席王沪宁主持开幕会。中共中央政治局常委、国务院副总理丁薛祥应邀出席会议并作报告。王沪宁在主持讲话中表示，中共二十届四中全会把推动高质量发展\n\n- 韩正会见南非副总统\n  6月23日，国家副主席韩正在北京会见南非副总统马沙蒂莱。韩正表示，习近平主席高度重视中南关系。今年3月，我受习近平主席委派，和你共同主持中南国家双边委员会第九次全体会议，取得圆满成功。双方要进一步落实好两国元首重要共识，深化政治互信，加强务实合作，推进会议成果落实，取得更多进展。中南作为金砖国家和二\n\n- 【树立和践行正确政绩观】以学促干 将学习教育成果落到实处\n  上海市静安区、辽宁省沈阳市扎实开展树立和践行正确政绩观学习教育，一体推进学查改，将学习成果落到实处。学习教育开展以来，上海市静安区引导党员干部实地走访，摸清群众关切。静安区辖区内幼儿园去年实现了托班全覆盖，满24个月的幼儿就能入托。但在走访中，一些双职工家长希望放宽幼儿年龄限制，托管时间也不局限于工\n\n- 我国利用外资结构持续优化\n  商务部发布的最新数据显示，今年1—5月，全国新设立外商投资企业超2.5万家，同比增长5.3%。5月当月，全国实际使用外资同比增长5.9%。实现月度同比增速由负转正。据统计，今年前五个月，近4000家外资企业在华追加投资，在存量基础上持续加码。  利用外资的结构也在进一步优化。今年前五个月，高技术产业\n\n- 我国将全链条扩大汽车消费\n  国务院新闻办今天（6月23日）举行新闻发布会，据商务部、工业和信息化部、文化和旅游部等相关负责人介绍，我国将全链条扩大汽车消费。聚焦房车露营、汽车改装等六大领域，有关部门提出17条具体举措。主要包括，支持各地建设房车营地，设置公共房车泊位，优化房车上路通行管理措施；对汽车改装实施分级分类管理，确定汽\n\n- 2026年黄河调水调沙启动\n  记者从水利部了解到，黄河2026年主汛期前调水调沙已正式启动。 今年的黄河调水调沙采用多水库联合调度模式，以万家寨、三门峡和小浪底水库调控为主，支流陆浑、故县、河口村水库进行配合。小浪底水利枢纽控制着黄河91.2%的径流量和近100%的输沙量。每年主汛期来临前，小浪底水利枢纽加大下泄流量，腾出库容的\n",
+    "insider_transactions": "# Major shareholder transactions for 600306.SS\n\n# Source: AKShare\n\n\nData unavailable: stock_inner_trade_xq() got an unexpected keyword argument 'symbol'",
+    "macro_indicators": {
+      "lpr_1y": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "lpr_5y": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "mlf_rate": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "shibor_overnight": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "rrr": "<unavailable: ValueError: FRED request failed: Bad Request.  The series does not exist.>",
+      "cn_cpi": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_ppi": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_pmi_mfg": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_pmi_non_mfg": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_m2": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_m1": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "social_financing": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "new_yuan_loans": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_gdp": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_industrial_production": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_fixed_asset_investment": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_retail_sales": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_forex_reserves": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_trade_balance": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_housing_price": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_10y_treasury": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_1y_treasury": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_unemployment": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>"
+    },
+    "prediction_markets": {
+      "northbound_flow": "## A股市场信号：北向资金 (Northbound Capital Flow)\n\n沪深港通北向资金净流入是A股最受关注的情绪指标。\n持续流入代表外资看好，持续流出代表外资谨慎。\n\n- **最新数据** (2024-08-16): 净流入 -67.75 亿元\n- **近5日累计**: -50.36 亿元（1日净流入，4日净流出）\n- **近10日累计**: -197.96 亿元\n\n| 日期 | 净流入(当日成交净买额) |\n| --- | --- |\n| 2024-08-16 | -67.75 亿元 |\n| 2024-08-15 | +122.06 亿元 |\n| 2024-08-14 | -71.66 亿元 |\n| 2024-08-13 | -25.27 亿元 |\n| 2024-08-12 | -7.73 亿元 |\n| 2024-08-09 | -77.65 亿元 |\n| 2024-08-08 | +11.03 亿元 |\n| 2024-08-07 | -21.36 亿元 |\n| 2024-08-06 | -62.51 亿元 |\n| 2024-08-05 | +2.88 亿元 |",
+      "margin_trading": "## A股市场信号：融资融券 (Margin Trading Balance)\n\n融资余额增加反映杠杆多头力量增强（看涨信号），\n融券余额增加反映做空力量增强（看跌信号）。\n\n- **最新数据日期**: 2026-06-23\n- **融资余额**: 15,045.65 亿元\n- **融券余额**: 142.82 亿元\n- **融资融券余额合计**: 15,188.48 亿元\n- **近5日融资余额变动**: 增加 308.77 亿元\n\n| 日期 | 融资余额(亿元) | 融券余额(亿元) |\n| --- | --- | --- |\n| 2026-06-23 | 15,045.65 | 142.82 |\n| 2026-06-22 | 15,055.58 | 143.37 |\n| 2026-06-18 | 14,951.86 | 140.89 |\n| 2026-06-17 | 14,882.12 | 142.88 |\n| 2026-06-16 | 14,736.89 | 143.07 |\n| 2026-06-15 | 14,617.67 | 140.65 |\n| 2026-06-12 | 14,488.96 | 138.68 |\n| 2026-06-11 | 14,482.47 | 136.61 |\n| 2026-06-10 | 14,478.58 | 138.12 |\n| 2026-06-09 | 14,522.22 | 137.71 |",
+      "top_institutional": "## A股市场信号：龙虎榜 (Top Institutional Activity)\n\n龙虎榜记录了涨跌幅异动、换手率异常等股票的机构/游资席位交易明细。\n机构净买入集中的个股/板块反映主力资金方向。\n\n| 日期 | 代码 | 名称 | 上榜原因 | 净买额(万元) |\n| --- | --- | --- | --- | --- |\n| 2026-06-23 | 000004 | 国华退 | 退市整理期 | 94 |\n| 2026-06-23 | 600961 | 株冶集团 | 非ST、*ST和S证券连续三个交易日内收 | 19,961 |\n| 2026-06-23 | 301687 | 新广益 | 日换手率达到30%的前5只证券 | -2,877 |\n| 2026-06-23 | 600172 | 黄河旋风 | 非ST、*ST和S证券连续三个交易日内收 | 49,403 |\n| 2026-06-23 | 600172 | 黄河旋风 | 有价格涨跌幅限制的日换手率达到20%的前 | 33,861 |\n| 2026-06-23 | 600193 | 退市创兴 | 退市整理的证券 | -30 |\n| 2026-06-23 | 600206 | 有研新材 | 非ST、*ST和S证券连续三个交易日内收 | 30,757 |\n| 2026-06-23 | 600322 | 津投城开 | 非ST、*ST和S证券连续三个交易日内收 | 3,977 |\n| 2026-06-23 | 600345 | 长江通信 | 非ST、*ST和S证券连续三个交易日内收 | 16,412 |\n| 2026-06-23 | 600353 | 旭光电子 | 非ST、*ST和S证券连续三个交易日内收 | 193,760 |\n| 2026-06-23 | 600362 | 江西铜业 | 有价格涨跌幅限制的日收盘价格跌幅偏离值达 | -33,928 |\n| 2026-06-23 | 600367 | 红星发展 | 有价格涨跌幅限制的日价格振幅达到15%的 | -31,164 |\n| 2026-06-23 | 600381 | *ST春天 | ST、*ST证券连续三个交易日内收盘价格 | -204 |\n| 2026-06-23 | 600397 | 江钨装备 | 非ST、*ST和S证券连续三个交易日内收 | 45,797 |\n| 2026-06-23 | 600400 | 红豆股份 | 有价格涨跌幅限制的日收盘价格涨幅偏离值达 | 5,122 |"
+    }
+  },
+  "fundamentals": {
+    "overview": "{\n  \"报告期\": \"1997-12-31\",\n  \"净利润\": \"2752.21万\",\n  \"净利润同比增长率\": \"False\",\n  \"扣非净利润\": \"False\",\n  \"扣非净利润同比增长率\": \"False\",\n  \"营业总收入\": \"7.28亿\",\n  \"营业总收入同比增长率\": \"False\",\n  \"基本每股收益\": \"False\",\n  \"每股净资产\": \"False\",\n  \"每股资本公积金\": \"False\",\n  \"每股未分配利润\": \"False\",\n  \"每股经营现金流\": \"False\",\n  \"销售净利率\": \"3.78%\",\n  \"销售毛利率\": \"14.62%\",\n  \"净资产收益率\": \"False\",\n  \"净资产收益率-摊薄\": \"33.37%\",\n  \"营业周期\": \"77.86\",\n  \"存货周转率\": \"4.62\",\n  \"存货周转天数\": \"77.86\",\n  \"应收账款周转天数\": \"False\",\n  \"流动比率\": \"0.56\",\n  \"速动比率\": \"0.07\",\n  \"保守速动比率\": \"0.07\",\n  \"产权比率\": \"3.36\",\n  \"资产负债率\": \"77.07%\"\n}",
+    "balance_sheet_quarterly": "# Balance Sheet for 600306.SS\n# Frequency: quarterly\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:47\n\n        code     pubDate    statDate currentRatio quickRatio cashRatio YOYLiability liabilityToAsset assetToEquity\n0  sh.600306  2025-08-26  2025-06-30     1.020405   0.990870  0.944075    -0.048466         0.007926      4.822037",
+    "balance_sheet_annual": "# Balance Sheet for 600306.SS\n# Frequency: annual\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:48\n\n        code     pubDate    statDate currentRatio quickRatio cashRatio YOYLiability liabilityToAsset assetToEquity\n0  sh.600306  2025-04-29  2024-12-31     0.933524   0.901470  0.878176    -0.087204         0.008567      6.979730",
+    "cashflow_quarterly": "# Cash Flow for 600306.SS\n# Frequency: quarterly\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:49\n\n        code     pubDate    statDate CAToAsset NCAToAsset tangibleAssetToAsset ebitToInterest   CFOToOR   CFOToNP   CFOToGr\n0  sh.600306  2025-08-26  2025-06-30  0.800119   0.199881             0.171834      82.643436  0.032952  0.096287  0.032952",
+    "cashflow_annual": "# Cash Flow for 600306.SS\n# Frequency: annual\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:51\n\n        code     pubDate    statDate CAToAsset NCAToAsset tangibleAssetToAsset ebitToInterest    CFOToOR CFOToNP    CFOToGr\n0  sh.600306  2025-04-29  2024-12-31  0.791728   0.208272             0.107249      -2.126459  -0.216131          -0.216131",
+    "income_quarterly": "# Income Statement for 600306.SS\n# Frequency: quarterly\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:53\n\n        code     pubDate    statDate    roeAvg  npMargin  gpMargin        netProfit    epsTTM        MBRevenue    totalShare     liqaShare\n0  sh.600306  2025-08-26  2025-06-30  0.381207  0.342230  0.672624  34204980.070000  0.090176  87464983.050000  428413599.00  374943498.00",
+    "income_annual": "# Income Statement for 600306.SS\n# Frequency: annual\n# Data source: BaoStock\n# Retrieved: 2026-06-24 12:39:54\n\n        code     pubDate    statDate     roeAvg   npMargin  gpMargin         netProfit     epsTTM        MBRevenue    totalShare     liqaShare\n0  sh.600306  2025-04-29  2024-12-31  -0.185208  -0.164849  0.435374  -14951312.060000  -0.034192  77772137.510000  428413599.00  294586354.00"
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "metadata": {
+    "ticker": "09992.HK",
+    "trade_date": "2026-06-24",
+    "original_trade_date": null,
+    "asset_type": "stock",
+    "collection_timestamp": "2026-06-24T07:55:55Z",
+    "selected_analysts": [
+      "fundamentals",
+      "market",
+      "news",
+      "social"
+    ],
+    "vendor_config": {
+      "data_vendors": {
+        "core_stock_apis": "sina,alpha_vantage",
+        "technical_indicators": "sina,alpha_vantage",
+        "fundamental_data": "alpha_vantage",
+        "news_data": "alpha_vantage",
+        "macro_data": "fred",
+        "prediction_markets": "polymarket"
+      },
+      "tool_vendors": {}
+    },
+    "bundle_version": "1.0"
+  },
+  "market": {
+    "stock_data": "<unavailable: stock_data: no data matching trade date 2026-06-24>",
+    "indicators": {
+      "close_50_sma": "<unavailable: indicator:close_50_sma: no data matching trade date 2026-06-24>",
+      "close_200_sma": "<unavailable: indicator:close_200_sma: no data matching trade date 2026-06-24>",
+      "close_10_ema": "<unavailable: indicator:close_10_ema: no data matching trade date 2026-06-24>",
+      "macd": "<unavailable: indicator:macd: no data matching trade date 2026-06-24>",
+      "macds": "<unavailable: indicator:macds: no data matching trade date 2026-06-24>",
+      "macdh": "<unavailable: indicator:macdh: no data matching trade date 2026-06-24>",
+      "rsi": "<unavailable: indicator:rsi: no data matching trade date 2026-06-24>",
+      "boll": "<unavailable: indicator:boll: no data matching trade date 2026-06-24>",
+      "boll_ub": "<unavailable: indicator:boll_ub: no data matching trade date 2026-06-24>",
+      "boll_lb": "<unavailable: indicator:boll_lb: no data matching trade date 2026-06-24>",
+      "atr": "<unavailable: indicator:atr: no data matching trade date 2026-06-24>",
+      "vwma": "<unavailable: indicator:vwma: no data matching trade date 2026-06-24>",
+      "mfi": "<unavailable: indicator:mfi: no data matching trade date 2026-06-24>"
+    },
+    "verified_snapshot": "<unavailable: NoMarketDataError: No market data for '09992.HK': No OHLCV data from any vendor>"
+  },
+  "sentiment": {
+    "ticker_news": "No news available for 09992.HK from AKShare.",
+    "stocktwits": "<unavailable: ValueError: Cannot convert '09992.HK' to AKShare format>",
+    "reddit": "<unavailable: ValueError: Cannot convert '09992.HK' to AKShare format>"
+  },
+  "news": {
+    "ticker_news": "No news available for 09992.HK from AKShare.",
+    "global_news": "# China macro news around 2026-06-24\n\n# Source: CCTV Finance via AKShare\n\n",
+    "insider_transactions": "Error retrieving insider transactions for 09992.HK: Too Many Requests. Rate limited. Try after a while.",
+    "macro_indicators": {
+      "hk_cpi": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "hk_ppi": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "hk_unemployment": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "hk_gdp": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "hk_gdp_rate": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "hk_trade_balance": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_pmi_mfg": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_cpi": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_gdp": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_m2": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>",
+      "cn_trade_balance": "<unavailable: ValueError: FRED request failed: Bad Request.  Invalid value for variable series_id.  Series IDs should be 25 or less alphanumeric characters.>"
+    },
+    "prediction_markets": {
+      "southbound_flow": "## 港股市场信号：南向资金 (Southbound Capital Flow via Stock Connect)\n\n南向资金是港股最受关注的情绪指标——代表内地资金流入香港市场的规模。\n持续大额净流入通常被解读为利好港股的情绪信号。\n\n**最新数据 (2026-06-23)**:\n- 当日净买入: +103.71 亿元\n- 近5日累计: -20.00 亿元\n\n**近 10 个交易日明细:**\n\n| 日期 | 净买入(亿元) |\n|------|------------|\n| 2026-06-23 | +103.71 亿元 |\n| 2026-06-22 | -58.20 亿元 |\n| 2026-06-18 | -67.92 亿元 |\n| 2026-06-17 | -32.22 亿元 |\n| 2026-06-16 | +34.63 亿元 |\n| 2026-06-15 | +21.10 亿元 |\n| 2026-06-12 | -39.42 亿元 |\n| 2026-06-11 | -27.54 亿元 |\n| 2026-06-10 | +82.43 亿元 |\n| 2026-06-09 | -86.14 亿元 |",
+      "hk_connect_summary": "## 港股市场信号：沪深港通资金流向汇总 (Stock Connect Flow Summary)\n\n沪深港通四条通道的实时资金流向状态，反映跨境资金动向。\n\n| 通道 | 类型 | 资金流向 | 成交净买额(亿) |\n|------|------|---------|--------------|\n| 沪港通 |  |  | 0.00 亿元 |\n| 沪港通 |  |  | +131.01 亿元 |\n| 深港通 |  |  | 0.00 亿元 |\n| 深港通 |  |  | +24.46 亿元 |",
+      "ah_premium": "## 港股市场信号：AH溢价\n数据不可用：AKShare 接口无返回\n请在缺少该信号的情况下继续分析。"
+    }
+  },
+  "fundamentals": {
+    "overview": "No fundamentals data available for 09992.HK from AKShare.",
+    "balance_sheet_quarterly": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no balance sheet data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "balance_sheet_annual": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no balance sheet data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "cashflow_quarterly": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no cash flow data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "cashflow_annual": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no cash flow data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "income_quarterly": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no income statement data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol.",
+    "income_annual": "NO_DATA_AVAILABLE: No usable market data for '09992.HK' from any configured vendor (no income statement data). The symbol may be invalid, delisted, not covered, or the vendor returned stale data. Do not estimate or fabricate values — report that data is unavailable for this symbol."
+  }
+}

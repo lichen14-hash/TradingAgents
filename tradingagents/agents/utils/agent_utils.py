@@ -96,13 +96,16 @@ def resolve_instrument_identity(ticker: str) -> dict:
     For A-share tickers, uses AKShare (EastMoney) instead of yfinance, since
     yfinance is inaccessible from mainland China.
     """
-    from tradingagents.dataflows.market_utils import is_a_share
+    from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
     from tradingagents.dataflows.symbol_utils import normalize_symbol
 
     normalized = normalize_symbol(ticker)
 
     if is_a_share(normalized):
         return _resolve_a_share_identity(normalized)
+
+    if is_hk_stock(normalized):
+        return _resolve_hk_identity(normalized)
 
     try:
         info = yf.Ticker(normalized).info or {}
@@ -161,6 +164,40 @@ def _resolve_a_share_identity(normalized: str) -> dict:
             identity["quote_type"] = "EQUITY"
     except Exception as exc:  # noqa: BLE001
         logger.warning("AKShare identity resolution failed for %s: %s", normalized, exc)
+
+    return identity
+
+
+def _resolve_hk_identity(normalized: str) -> dict:
+    """Resolve Hong Kong stock company identity via AKShare (EastMoney)."""
+    try:
+        import akshare as ak
+    except ImportError:
+        logger.debug("akshare not installed, cannot resolve HK identity for %s", normalized)
+        return {}
+
+    from tradingagents.dataflows.market_utils import hk_to_akshare_symbol
+
+    code = hk_to_akshare_symbol(normalized)
+    identity: dict[str, str] = {}
+
+    try:
+        from tradingagents.dataflows.retry import call_with_retry
+
+        df = call_with_retry(ak.stock_hk_company_profile_em, symbol=code)
+        if df is not None and not df.empty:
+            info_map = dict(zip(df.iloc[:, 0], df.iloc[:, 1], strict=False))
+            name = _clean_identity_value(str(info_map.get("股票简称", info_map.get("公司名称", ""))))
+            if name:
+                identity["company_name"] = name
+            industry = _clean_identity_value(str(info_map.get("行业", "")))
+            if industry:
+                identity["industry"] = industry
+                identity["sector"] = industry
+            identity["exchange"] = "港股"
+            identity["quote_type"] = "EQUITY"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AKShare HK identity resolution failed for %s: %s", normalized, exc)
 
     return identity
 

@@ -15,7 +15,7 @@ import pandas as pd
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
-from tradingagents.dataflows.market_utils import is_a_share
+from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
@@ -29,6 +29,8 @@ from .constants import (
     CN_PREDICTION_QUERIES,
     DEFAULT_MACRO_INDICATORS,
     DEFAULT_PREDICTION_QUERIES,
+    HK_MACRO_INDICATORS,
+    HK_PREDICTION_QUERIES,
 )
 from .schema import (
     BundleMetadata,
@@ -221,7 +223,7 @@ class DataCollector:
             route_to_vendor, "get_news", ticker, start_date, trade_date,
         )
 
-        if is_a_share(ticker):
+        if is_a_share(ticker) or is_hk_stock(ticker):
             from tradingagents.dataflows.eastmoney import (
                 fetch_eastmoney_guba,
                 fetch_sina_finance_comments,
@@ -266,6 +268,12 @@ class DataCollector:
                 "news:global(akshare)",
                 _ak_global_news, trade_date, lookback, limit,
             )
+        elif is_hk_stock(ticker):
+            from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
+            global_news = _safe_call(
+                "news:global(hk_akshare)",
+                _hk_global_news, trade_date, lookback, limit,
+            )
         else:
             global_news = _safe_call(
                 "news:global",
@@ -279,25 +287,55 @@ class DataCollector:
 
         if is_a_share(ticker):
             macro_list = self.config.get("cn_macro_indicators", list(CN_MACRO_INDICATORS))
+        elif is_hk_stock(ticker):
+            macro_list = self.config.get("hk_macro_indicators", list(HK_MACRO_INDICATORS))
         else:
             macro_list = self.config.get("standard_macro_indicators", list(DEFAULT_MACRO_INDICATORS))
         macro: dict[str, str] = {}
-        for ind in macro_list:
-            macro[ind] = _safe_call(
-                f"macro:{ind}",
-                route_to_vendor, "get_macro_indicators", ind, trade_date, None,
-            )
+        if is_a_share(ticker):
+            from tradingagents.dataflows.china_macro import get_cn_macro_data
+            for ind in macro_list:
+                macro[ind] = _safe_call(
+                    f"macro:{ind}", get_cn_macro_data, ind, trade_date, None,
+                )
+        elif is_hk_stock(ticker):
+            from tradingagents.dataflows.hk_macro import get_hk_macro_data
+            for ind in macro_list:
+                macro[ind] = _safe_call(
+                    f"macro:{ind}", get_hk_macro_data, ind, trade_date, None,
+                )
+        else:
+            for ind in macro_list:
+                macro[ind] = _safe_call(
+                    f"macro:{ind}",
+                    route_to_vendor, "get_macro_indicators", ind, trade_date, None,
+                )
 
         if is_a_share(ticker):
             pred_queries = self.config.get("cn_prediction_queries", list(CN_PREDICTION_QUERIES))
+        elif is_hk_stock(ticker):
+            pred_queries = self.config.get("hk_prediction_queries", list(HK_PREDICTION_QUERIES))
         else:
             pred_queries = self.config.get("standard_prediction_queries", list(DEFAULT_PREDICTION_QUERIES))
         predictions: dict[str, str] = {}
-        for query in pred_queries:
-            predictions[query] = _safe_call(
-                f"prediction:{query}",
-                route_to_vendor, "get_prediction_markets", query, None,
-            )
+        if is_a_share(ticker):
+            from tradingagents.dataflows.cn_market_signals import get_cn_market_signals
+            for query in pred_queries:
+                predictions[query] = _safe_call(
+                    f"cn_signal:{query}", get_cn_market_signals, query, None,
+                )
+        elif is_hk_stock(ticker):
+            from tradingagents.dataflows.hk_market_signals import get_hk_market_signals
+            for query in pred_queries:
+                predictions[query] = _safe_call(
+                    f"hk_signal:{query}", get_hk_market_signals, query, None,
+                )
+        else:
+            for query in pred_queries:
+                predictions[query] = _safe_call(
+                    f"prediction:{query}",
+                    route_to_vendor, "get_prediction_markets", query, None,
+                )
 
         return NewsData(
             ticker_news=ticker_news,

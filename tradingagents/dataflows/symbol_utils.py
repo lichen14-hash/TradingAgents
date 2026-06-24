@@ -114,9 +114,12 @@ def normalize_symbol(raw: str) -> str:
     if not isinstance(raw, str) or not raw.strip():
         return raw
 
-    from .market_utils import is_a_share, normalize_a_share_symbol
-    if is_a_share(raw.strip()):
-        return normalize_a_share_symbol(raw.strip())
+    from .market_utils import is_a_share, is_hk_stock, normalize_a_share_symbol, normalize_hk_symbol
+    stripped = raw.strip()
+    if is_hk_stock(stripped):
+        return normalize_hk_symbol(stripped)
+    if is_a_share(stripped):
+        return normalize_a_share_symbol(stripped)
 
     s = raw.strip().upper()
     # Broker CFD/qualifier suffixes Yahoo never uses.

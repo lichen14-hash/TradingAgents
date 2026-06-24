@@ -18,7 +18,7 @@ from .errors import (
     VendorRateLimitError,
 )
 from .fred import get_macro_data as get_fred_macro_data
-from .market_utils import is_a_share
+from .market_utils import is_a_share, is_hk_stock
 from .polymarket import get_prediction_markets as get_polymarket_prediction_markets
 from .sina_finance import (
     get_indicators as get_sina_indicators,
@@ -77,6 +77,36 @@ try:
     _CN_MACRO_AVAILABLE = True
 except ImportError:
     _CN_MACRO_AVAILABLE = False
+
+try:
+    from .cn_market_signals import get_cn_market_signals as get_cn_signals_prediction
+    _CN_SIGNALS_AVAILABLE = True
+except ImportError:
+    _CN_SIGNALS_AVAILABLE = False
+
+try:
+    from .hk_akshare_provider import (
+        get_fundamentals as get_hk_akshare_fundamentals,
+        get_indicators as get_hk_akshare_indicators,
+        get_global_news as get_hk_akshare_global_news,
+        get_news as get_hk_akshare_news,
+        get_stock_data as get_hk_akshare_stock,
+    )
+    _HK_AKSHARE_AVAILABLE = True
+except ImportError:
+    _HK_AKSHARE_AVAILABLE = False
+
+try:
+    from .hk_macro import get_hk_macro_data
+    _HK_MACRO_AVAILABLE = True
+except ImportError:
+    _HK_MACRO_AVAILABLE = False
+
+try:
+    from .hk_market_signals import get_hk_market_signals as get_hk_signals_prediction
+    _HK_SIGNALS_AVAILABLE = True
+except ImportError:
+    _HK_SIGNALS_AVAILABLE = False
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -146,6 +176,10 @@ VENDOR_LIST = [
     "baostock",
     "efinance",
     "cn_macro",
+    "cn_signals",
+    "hk_akshare",
+    "hk_macro",
+    "hk_signals",
 ]
 
 # Mapping of methods to their vendor-specific implementations
@@ -159,6 +193,7 @@ VENDOR_METHODS = {
         **({"tushare": get_tushare_stock} if _TUSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_stock} if _BAOSTOCK_AVAILABLE else {}),
         **({"efinance": get_efinance_stock} if _EFINANCE_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_stock} if _HK_AKSHARE_AVAILABLE else {}),
     },
     # technical_indicators
     "get_indicators": {
@@ -169,6 +204,7 @@ VENDOR_METHODS = {
         **({"tushare": get_tushare_indicators} if _TUSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_indicators} if _BAOSTOCK_AVAILABLE else {}),
         **({"efinance": get_efinance_indicators} if _EFINANCE_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_indicators} if _HK_AKSHARE_AVAILABLE else {}),
     },
     # fundamental_data
     "get_fundamentals": {
@@ -176,6 +212,7 @@ VENDOR_METHODS = {
         "yfinance": get_yfinance_fundamentals,
         **({"akshare": get_akshare_fundamentals} if _AKSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_fundamentals} if _BAOSTOCK_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_fundamentals} if _HK_AKSHARE_AVAILABLE else {}),
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
@@ -200,11 +237,13 @@ VENDOR_METHODS = {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
         **({"akshare": get_akshare_news} if _AKSHARE_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_news} if _HK_AKSHARE_AVAILABLE else {}),
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
         **({"akshare": get_akshare_global_news} if _AKSHARE_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_global_news} if _HK_AKSHARE_AVAILABLE else {}),
     },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
@@ -215,10 +254,13 @@ VENDOR_METHODS = {
     "get_macro_indicators": {
         "fred": get_fred_macro_data,
         **({"cn_macro": get_cn_macro_data} if _CN_MACRO_AVAILABLE else {}),
+        **({"hk_macro": get_hk_macro_data} if _HK_MACRO_AVAILABLE else {}),
     },
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
+        **({"cn_signals": get_cn_signals_prediction} if _CN_SIGNALS_AVAILABLE else {}),
+        **({"hk_signals": get_hk_signals_prediction} if _HK_SIGNALS_AVAILABLE else {}),
     },
 }
 
@@ -255,7 +297,21 @@ _A_SHARE_VENDOR_CHAINS = {
     "get_global_news": "akshare",
     "get_insider_transactions": "akshare",
     "get_macro_indicators": "cn_macro",
-    "get_prediction_markets": "polymarket",
+    "get_prediction_markets": "cn_signals",
+}
+
+_HK_VENDOR_CHAINS = {
+    "get_stock_data": "hk_akshare,efinance,yfinance",
+    "get_indicators": "hk_akshare,efinance,yfinance",
+    "get_fundamentals": "yfinance,hk_akshare",
+    "get_balance_sheet": "yfinance",
+    "get_cashflow": "yfinance",
+    "get_income_statement": "yfinance",
+    "get_news": "hk_akshare,yfinance",
+    "get_global_news": "hk_akshare,akshare",
+    "get_insider_transactions": "yfinance",
+    "get_macro_indicators": "hk_macro",
+    "get_prediction_markets": "hk_signals",
 }
 
 _DEFAULT_US_VENDORS = {"yfinance", "alpha_vantage", "fred", "default"}
@@ -267,6 +323,10 @@ def route_to_vendor(method: str, *args, **kwargs):
     vendor_config = get_vendor(category, method)
 
     ticker_arg = args[0] if args else None
+    if ticker_arg and method in _HK_VENDOR_CHAINS:
+        t = str(ticker_arg)
+        if is_hk_stock(t) and {v.strip() for v in vendor_config.split(",")}.issubset(_DEFAULT_US_VENDORS):
+            vendor_config = _HK_VENDOR_CHAINS[method]
     if (
         ticker_arg
         and is_a_share(str(ticker_arg))
