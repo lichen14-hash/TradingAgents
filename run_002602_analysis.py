@@ -104,7 +104,12 @@ def generate_html_report(final_state: dict, bundle: DataBundle):
 
     date_note = ""
     if original_date:
-        date_note = f'<p class="date-correction">⚠️ 用户输入日期 <strong>{escape_html(original_date)}</strong> 为非交易日，已自动校正为 <strong>{escape_html(trade_date)}</strong></p>'
+        reason = getattr(meta, 'date_correction_reason', '')
+        if reason == "data_not_ready":
+            msg = f'用户输入日期 <strong>{escape_html(original_date)}</strong> 的行情数据尚未更新，已使用最近交易日 <strong>{escape_html(trade_date)}</strong> 的数据'
+        else:
+            msg = f'用户输入日期 <strong>{escape_html(original_date)}</strong> 为非交易日，已自动校正为 <strong>{escape_html(trade_date)}</strong>'
+        date_note = f'<p class="date-correction">⚠️ {msg}</p>'
 
     data_tables_html = build_data_tables(bundle)
     decision_html = build_decision_section(final_state)
@@ -115,6 +120,8 @@ def generate_html_report(final_state: dict, bundle: DataBundle):
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="stock-name" content="{escape_html(ticker)}">
+<meta name="stock-ticker" content="{escape_html(ticker)}">
 <title>TradingAgents 分析报告 - {escape_html(ticker)} ({escape_html(trade_date)})</title>
 <style>
 * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -193,7 +200,7 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 <tr><td>股票代码</td><td>{escape_html(ticker)}</td></tr>
 <tr><td>交易日（校正后）</td><td>{escape_html(trade_date)}</td></tr>
 <tr><td>用户输入日期</td><td>{escape_html(original_date or trade_date)}</td></tr>
-<tr><td>是否校正</td><td>{"是" if original_date else "否（输入即为交易日）"}</td></tr>
+<tr><td>是否校正</td><td>{"是（数据尚未更新）" if getattr(meta, 'date_correction_reason', '') == "data_not_ready" else "是（非交易日）" if original_date else "否（输入即为交易日）"}</td></tr>
 <tr><td>采集时间</td><td>{escape_html(meta.collection_timestamp)}</td></tr>
 <tr><td>数据版本</td><td>{escape_html(meta.bundle_version)}</td></tr>
 <tr><td>选中分析师</td><td>{escape_html(', '.join(meta.selected_analysts))}</td></tr>

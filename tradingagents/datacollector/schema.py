@@ -9,6 +9,7 @@ class BundleMetadata(BaseModel):
     ticker: str
     trade_date: str
     original_trade_date: str | None = None
+    date_correction_reason: str = ""
     asset_type: str = "stock"
     collection_timestamp: str = ""
     selected_analysts: list[str] = Field(default_factory=list)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue as _queue_mod
 import re
 import subprocess
 import sys
@@ -55,11 +56,43 @@ class TaskInfo:
     event_log: list = field(default_factory=list)
     html_path: str = ""
     pdf_path: str = ""
+    batch_id: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+
+@dataclass
+class BatchInfo:
+    batch_id: str
+    task_ids: list[str]
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
 tasks: dict[str, TaskInfo] = {}
+batches: dict[str, BatchInfo] = {}
 _tasks_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Sequential work queue
+# ---------------------------------------------------------------------------
+
+_work_queue: _queue_mod.Queue[str] = _queue_mod.Queue()
+
+
+def _worker_loop():
+    while True:
+        task_id = _work_queue.get()
+        try:
+            task = tasks.get(task_id)
+            if task and task.status == "pending":
+                _run_analysis(task)
+        except Exception:
+            logger.exception("Worker failed for task %s", task_id)
+        finally:
+            _work_queue.task_done()
+
+
+_worker_thread = threading.Thread(target=_worker_loop, daemon=True)
+_worker_thread.start()
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +105,11 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 class AnalyzeRequest(BaseModel):
     ticker: str
+    date: str | None = None
+
+
+class BatchAnalyzeRequest(BaseModel):
+    tickers: list[str]
     date: str | None = None
 
 
@@ -95,23 +133,59 @@ def _normalize_ticker(raw: str) -> tuple[str, str]:
 _US_TICKER = re.compile(r"^[A-Z]{1,5}([.-][A-Z]{1,2})?$")
 
 
-def _validate_ticker(raw: str, ticker: str) -> None:
-    """Raise HTTPException if the ticker is not recognizable."""
+def _validate_ticker(raw: str, ticker: str) -> str | None:
+    """Return an error message if the ticker is not recognizable, else None."""
     if is_hk_stock(ticker):
-        return
+        return None
     if detect_exchange(ticker):
-        return
+        return None
     if _US_TICKER.match(ticker):
-        return
-    raise HTTPException(
-        400,
-        f"无法识别的股票代码 \"{raw}\"。"
-        f"请输入正确格式：A股(688599)、港股(00700.HK)、美股(AAPL)",
-    )
+        return None
+    return f"无法识别的股票代码 \"{raw}\"，请输入正确格式：A股(688599)、港股(00700.HK)、美股(AAPL)"
+
+
+_name_cache: dict[str, str] = {}
+
+
+def _sina_name_lookup(ticker: str) -> str | None:
+    """Resolve Chinese stock name via Sina real-time quote API."""
+    if ticker in _name_cache:
+        return _name_cache[ticker]
+
+    upper = ticker.upper()
+    if upper.endswith(".SS"):
+        sina_code = "sh" + upper.replace(".SS", "")
+    elif upper.endswith(".SZ"):
+        sina_code = "sz" + upper.replace(".SZ", "")
+    elif upper.endswith(".HK"):
+        code = upper.replace(".HK", "").zfill(5)
+        sina_code = "hk" + code
+    else:
+        base = upper.split(".")[0]
+        sina_code = "gb_" + base.lower()
+
+    try:
+        import urllib.request
+        url = f"https://hq.sinajs.cn/list={sina_code}"
+        req = urllib.request.Request(url, headers={"Referer": "https://finance.sina.com.cn"})
+        resp = urllib.request.urlopen(req, timeout=5).read().decode("gbk")
+        parts = resp.split('"')[1].split(",") if '"' in resp else []
+        if not parts or not parts[0]:
+            return None
+        name = parts[1] if sina_code.startswith("hk") and len(parts) > 1 else parts[0]
+        if name:
+            _name_cache[ticker] = name
+            return name
+    except Exception:
+        pass
+    return None
 
 
 def _resolve_name(ticker: str) -> str:
     """Try to resolve a human-readable name for the ticker."""
+    name = _sina_name_lookup(ticker)
+    if name:
+        return name
     try:
         from tradingagents.agents.utils.agent_utils import resolve_instrument_identity
         identity = resolve_instrument_identity(ticker)
@@ -155,7 +229,7 @@ def _emit(task: TaskInfo, stage: str, message: str):
 def _run_analysis(task: TaskInfo):
     """Run the full analysis pipeline in a background thread."""
     try:
-        name = _resolve_name(task.ticker)
+        name = task.name if task.name != task.ticker else _resolve_name(task.ticker)
         task.name = name
         _emit(task, "init", f"开始分析 {name} ({task.ticker})")
 
@@ -361,17 +435,24 @@ def _scan_history():
             except Exception:
                 pass
 
-        if not signal and html.exists():
+        name = ticker
+        if html.exists():
             try:
                 html_text = html.read_text(encoding="utf-8")
-                signal = _extract_signal(html_text)
+                if not signal:
+                    signal = _extract_signal(html_text)
+                m = re.search(r'<meta\s+name="stock-name"\s+content="([^"]+)"', html_text[:2000])
+                if m and m.group(1) != ticker:
+                    name = m.group(1)
             except Exception:
                 pass
+        if name == ticker:
+            name = ticker
 
         t = TaskInfo(
             task_id=task_id,
             ticker=ticker,
-            name=ticker,
+            name=name,
             date="",
             status="done",
             signal=signal,
@@ -400,7 +481,9 @@ async def index():
 @app.post("/api/analyze")
 async def submit_analysis(req: AnalyzeRequest):
     ticker, code = _normalize_ticker(req.ticker)
-    _validate_ticker(req.ticker.strip(), ticker)
+    err = _validate_ticker(req.ticker.strip(), ticker)
+    if err:
+        raise HTTPException(400, err)
     date = req.date or datetime.now().strftime("%Y-%m-%d")
 
     with _tasks_lock:
@@ -409,15 +492,114 @@ async def submit_analysis(req: AnalyzeRequest):
                 raise HTTPException(400, f"{ticker} 正在分析中，请等待完成")
 
     task_id = uuid.uuid4().hex[:12]
-    task = TaskInfo(task_id=task_id, ticker=ticker, name=code, date=date)
+    name = _sina_name_lookup(ticker) or code
+    task = TaskInfo(task_id=task_id, ticker=ticker, name=name, date=date)
 
     with _tasks_lock:
         tasks[task_id] = task
 
-    thread = threading.Thread(target=_run_analysis, args=(task,), daemon=True)
-    thread.start()
+    _work_queue.put(task_id)
 
-    return {"task_id": task_id, "ticker": ticker, "name": code}
+    return {"task_id": task_id, "ticker": ticker, "name": name}
+
+
+@app.post("/api/analyze/batch")
+async def submit_batch_analysis(req: BatchAnalyzeRequest):
+    if not req.tickers:
+        raise HTTPException(400, "请输入至少一个股票代码")
+    if len(req.tickers) > 10:
+        raise HTTPException(400, "批量分析最多支持 10 个股票代码")
+
+    date = req.date or datetime.now().strftime("%Y-%m-%d")
+
+    # Normalize, deduplicate, and validate all tickers first
+    errors = []
+    seen = set()
+    validated: list[tuple[str, str, str]] = []  # (ticker, code, name)
+    for raw in req.tickers:
+        raw = raw.strip()
+        if not raw:
+            continue
+        ticker, code = _normalize_ticker(raw)
+        err = _validate_ticker(raw, ticker)
+        if err:
+            errors.append(err)
+            continue
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        validated.append((ticker, code, raw))
+
+    if errors:
+        raise HTTPException(400, "；".join(errors))
+
+    if not validated:
+        raise HTTPException(400, "没有有效的股票代码")
+
+    # Check for already-active tickers
+    with _tasks_lock:
+        for ticker, code, raw in validated:
+            for t in tasks.values():
+                if t.ticker == ticker and t.status in ("pending", "collecting", "analyzing", "generating"):
+                    raise HTTPException(400, f"{ticker} 正在分析中，请等待完成")
+
+    batch_id = uuid.uuid4().hex[:12]
+    task_list = []
+
+    for ticker, code, raw in validated:
+        task_id = uuid.uuid4().hex[:12]
+        name = _sina_name_lookup(ticker) or code
+        task = TaskInfo(
+            task_id=task_id, ticker=ticker, name=name,
+            date=date, batch_id=batch_id,
+        )
+        with _tasks_lock:
+            tasks[task_id] = task
+        task_list.append({"task_id": task_id, "ticker": ticker, "name": name})
+
+    batch = BatchInfo(batch_id=batch_id, task_ids=[t["task_id"] for t in task_list])
+    with _tasks_lock:
+        batches[batch_id] = batch
+
+    for t in task_list:
+        _work_queue.put(t["task_id"])
+
+    return {"batch_id": batch_id, "tasks": task_list}
+
+
+@app.get("/api/batch/{batch_id}")
+async def get_batch_status(batch_id: str):
+    with _tasks_lock:
+        batch = batches.get(batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+
+    result = []
+    for tid in batch.task_ids:
+        t = tasks.get(tid)
+        if not t:
+            continue
+        last_stage = ""
+        if t.event_log:
+            last_stage = t.event_log[-1].get("message", "")
+        result.append({
+            "task_id": t.task_id,
+            "ticker": t.ticker,
+            "name": t.name,
+            "status": t.status,
+            "signal": t.signal,
+            "stage_message": last_stage,
+            "has_pdf": bool(t.pdf_path and Path(t.pdf_path).exists()),
+            "has_html": bool(t.html_path and Path(t.html_path).exists()),
+        })
+
+    done_count = sum(1 for r in result if r["status"] in ("done", "failed"))
+    return {
+        "batch_id": batch_id,
+        "total": len(result),
+        "done": done_count,
+        "tasks": result,
+    }
 
 
 @app.get("/api/progress/{task_id}")
@@ -472,6 +654,7 @@ async def list_tasks():
                 "has_pdf": bool(t.pdf_path and Path(t.pdf_path).exists()),
                 "has_html": bool(t.html_path and Path(t.html_path).exists()),
                 "created_at": t.created_at,
+                "batch_id": t.batch_id,
             })
     return result
 

@@ -25,7 +25,7 @@ from .stockstats_utils import (
     _assert_ohlcv_not_stale,
     _clean_dataframe,
 )
-from .utils import safe_ticker_component
+from .utils import is_cache_fresh, safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _load_ohlcv_sina(symbol: str, curr_date: str) -> pd.DataFrame:
     )
 
     data = None
-    if os.path.exists(cache_file):
+    if is_cache_fresh(cache_file, symbol):
         cached = pd.read_csv(cache_file, on_bad_lines="skip", encoding="utf-8")
         if not cached.empty and "Close" in cached.columns:
             data = cached

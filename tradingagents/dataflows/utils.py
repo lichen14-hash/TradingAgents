@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import date, datetime, timedelta
 from typing import Annotated
@@ -40,6 +41,46 @@ def safe_ticker_component(value: str, *, max_len: int = 32) -> str:
     if set(value) == {"."}:
         raise ValueError(f"ticker cannot consist solely of dots: {value!r}")
     return value
+
+
+_MARKET_CLOSE = {
+    "a_share": (15, 0),
+    "hk": (16, 15),
+    "us": (5, 0),  # US close ≈ next day 05:00 Beijing time
+}
+
+
+def is_cache_fresh(cache_path: str, ticker: str) -> bool:
+    """Check whether a daily OHLCV cache file still contains final data.
+
+    Returns False (stale) when ALL of:
+      - the cache file exists
+      - current time is past today's market close
+      - the file was last written BEFORE market close
+
+    This forces a re-download after market close so intraday partial data
+    is replaced with the complete daily bar.
+    """
+    if not os.path.exists(cache_path):
+        return False
+
+    from .market_utils import is_a_share, is_hk_stock
+
+    if is_a_share(ticker):
+        close_h, close_m = _MARKET_CLOSE["a_share"]
+    elif is_hk_stock(ticker):
+        close_h, close_m = _MARKET_CLOSE["hk"]
+    else:
+        close_h, close_m = _MARKET_CLOSE["us"]
+
+    now = datetime.now()
+    today_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+    mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
+
+    if now >= today_close and mtime < today_close:
+        return False  # stale: written during trading hours
+
+    return True
 
 
 def save_output(data: pd.DataFrame, tag: str, save_path: SavePathType = None) -> None:
