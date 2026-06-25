@@ -19,10 +19,10 @@ from stockstats import wrap
 
 from .config import get_config
 from .errors import NoMarketDataError
-from .market_utils import a_share_to_akshare_symbol, is_etf
+from .market_utils import a_share_to_akshare_symbol, detect_exchange, is_etf
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
-from .utils import safe_ticker_component
+from .utils import is_cache_fresh, safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,13 @@ _COL_MAP = {
     "最低": "Low",
     "收盘": "Close",
     "成交量": "Volume",
+    # fund_etf_hist_sina returns lowercase English columns
+    "date": "Date",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "volume": "Volume",
 }
 
 
@@ -68,22 +75,35 @@ def _load_ohlcv_akshare(symbol: str, curr_date: str) -> pd.DataFrame:
     )
 
     data = None
-    if os.path.exists(cache_file):
+    if is_cache_fresh(cache_file, symbol):
         cached = pd.read_csv(cache_file, on_bad_lines="skip", encoding="utf-8")
         if not cached.empty and "Close" in cached.columns:
             data = cached
 
     if data is None:
         if is_etf(symbol):
-            df = call_with_retry(
-                ak.fund_etf_hist_em,
-                symbol=code,
-                period="daily",
-                start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
-                adjust="qfq",
-                timeout=REQUEST_TIMEOUT,
-            )
+            df = None
+            try:
+                df = call_with_retry(
+                    ak.fund_etf_hist_em,
+                    symbol=code,
+                    period="daily",
+                    start_date="20200101",
+                    end_date=datetime.now().strftime("%Y%m%d"),
+                    adjust="qfq",
+                )
+            except Exception as e:
+                logger.warning("fund_etf_hist_em failed for %s: %s", code, e)
+            if df is None or df.empty:
+                suffix = detect_exchange(symbol)
+                sina_prefix = "sh" if suffix == ".SS" else "sz"
+                try:
+                    df = call_with_retry(
+                        ak.fund_etf_hist_sina, symbol=f"{sina_prefix}{code}",
+                    )
+                except Exception as e:
+                    logger.warning("fund_etf_hist_sina fallback also failed for %s: %s", code, e)
+                    df = None
         else:
             df = call_with_retry(
                 ak.stock_zh_a_hist,

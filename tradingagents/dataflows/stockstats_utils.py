@@ -10,7 +10,7 @@ from yfinance.exceptions import YFRateLimitError
 
 from .config import get_config
 from .symbol_utils import NoMarketDataError, normalize_symbol
-from .utils import safe_ticker_component
+from .utils import is_cache_fresh, safe_ticker_component
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # transient rate limit). Treat an empty/columnless cache as a miss and
     # re-fetch rather than serving the poisoned file forever.
     data = None
-    if os.path.exists(data_file):
+    if is_cache_fresh(data_file, canonical):
         cached = pd.read_csv(data_file, on_bad_lines="skip", encoding="utf-8")
         if not cached.empty and "Close" in cached.columns:
             data = cached

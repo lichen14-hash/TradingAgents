@@ -59,18 +59,32 @@ def _safe_call(label: str, func, *args, **kwargs) -> str:
         return _unavailable(f"{type(e).__name__}: {e}")
 
 
-def _resolve_trading_date(ticker: str, trade_date: str) -> tuple[str, pd.DataFrame]:
+def _resolve_trading_date(ticker: str, trade_date: str) -> tuple[str, pd.DataFrame, str]:
     """Roll *trade_date* back to the most recent actual trading day.
 
-    Returns ``(corrected_date, ohlcv_df)`` so the caller can reuse the
-    already-downloaded OHLCV frame.
+    Returns ``(corrected_date, ohlcv_df, reason)`` where *reason* is one of:
+    - ``""``              — no correction needed
+    - ``"non_trading_day"`` — weekend or holiday
+    - ``"data_not_ready"``  — trading day but data source hasn't updated yet
     """
     df = load_ohlcv(ticker, trade_date)
     if df is None or df.empty:
         raise ValueError(f"No OHLCV data for {ticker}, cannot resolve trading date")
     latest_date = df["Date"].max()
     corrected = pd.to_datetime(latest_date).strftime("%Y-%m-%d")
-    return corrected, df
+
+    if corrected == trade_date:
+        return corrected, df, ""
+
+    input_dt = pd.to_datetime(trade_date)
+    if input_dt.weekday() >= 5:
+        return corrected, df, "non_trading_day"
+
+    today = pd.Timestamp.today().normalize()
+    if input_dt == today:
+        return corrected, df, "data_not_ready"
+
+    return corrected, df, "non_trading_day"
 
 
 def _validate_market_date(value: str, corrected_date: str, label: str) -> str:
@@ -102,12 +116,14 @@ class DataCollector:
         logger.info("Collecting data for %s on %s (analysts: %s)", ticker, trade_date, selected)
 
         original_trade_date: str | None = None
+        date_correction_reason: str = ""
         ohlcv_df: pd.DataFrame | None = None
         try:
-            corrected, ohlcv_df = _resolve_trading_date(ticker, trade_date)
+            corrected, ohlcv_df, reason = _resolve_trading_date(ticker, trade_date)
             if corrected != trade_date:
-                logger.info("Trading date corrected: %s → %s", trade_date, corrected)
+                logger.info("Trading date corrected: %s → %s (%s)", trade_date, corrected, reason)
                 original_trade_date = trade_date
+                date_correction_reason = reason
                 trade_date = corrected
         except Exception as e:
             logger.warning("Trading date resolution failed: %s, using original", e)
@@ -116,6 +132,7 @@ class DataCollector:
             ticker=ticker,
             trade_date=trade_date,
             original_trade_date=original_trade_date,
+            date_correction_reason=date_correction_reason,
             asset_type=asset_type,
             collection_timestamp=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
             selected_analysts=sorted(selected),

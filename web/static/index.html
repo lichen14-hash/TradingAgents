@@ -31,7 +31,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .btn-analyze:hover { opacity: 0.9; }
 .btn-analyze:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* Progress section */
+/* Progress section — single task */
 .progress-card { background: white; border-radius: 12px; padding: 28px;
                  box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; display: none; }
 .progress-card.active { display: block; }
@@ -50,6 +50,32 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .steps li.error .step-icon { background: #dc3545; border-color: #dc3545; color: white; }
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(102,126,234,0.4); }
                    50% { box-shadow: 0 0 0 8px rgba(102,126,234,0); } }
+
+/* Batch progress section */
+.batch-card { background: white; border-radius: 12px; padding: 28px;
+              box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; display: none; }
+.batch-card.active { display: block; }
+.batch-title { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+.batch-list { list-style: none; }
+.batch-item { display: flex; align-items: center; gap: 12px; padding: 12px 0;
+              border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+.batch-item:last-child { border-bottom: none; }
+.batch-icon { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #ddd;
+              display: flex; align-items: center; justify-content: center; font-size: 12px;
+              flex-shrink: 0; }
+.batch-item.pending .batch-icon { border-color: #ddd; }
+.batch-item.active .batch-icon { border-color: #667eea; animation: pulse 1.2s infinite; }
+.batch-item.done .batch-icon { background: #28a745; border-color: #28a745; color: white; }
+.batch-item.failed .batch-icon { background: #dc3545; border-color: #dc3545; color: white; }
+.batch-item-info { flex: 1; }
+.batch-item-name { font-weight: 600; }
+.batch-item-stage { font-size: 12px; color: #999; margin-top: 2px; }
+.batch-item-signal { font-weight: 700; font-size: 14px; padding: 4px 12px; border-radius: 4px; }
+.batch-item-signal.buy, .batch-item-signal.strong-buy { background: #fde8e8; color: #dc3545; }
+.batch-item-signal.sell, .batch-item-signal.strong-sell { background: #e8f5e9; color: #28a745; }
+.batch-item-signal.hold { background: #fff8e1; color: #f59e0b; }
+.batch-item-actions a { font-size: 13px; color: #667eea; text-decoration: none; margin-left: 8px; }
+.batch-item-actions a:hover { text-decoration: underline; }
 
 /* Result section */
 .result-card { background: white; border-radius: 12px; padding: 28px;
@@ -79,12 +105,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .history-info .ticker { font-weight: 600; font-size: 15px; }
 .history-info .meta { font-size: 12px; color: #999; }
 .history-signal { font-weight: 700; font-size: 14px; padding: 4px 12px; border-radius: 4px; }
-.history-signal.buy { background: #fde8e8; color: #dc3545; }
-.history-signal.sell { background: #e8f5e9; color: #28a745; }
+.history-signal.buy, .history-signal.strong-buy { background: #fde8e8; color: #dc3545; }
+.history-signal.sell, .history-signal.strong-sell { background: #e8f5e9; color: #28a745; }
 .history-signal.hold { background: #fff8e1; color: #f59e0b; }
 .history-actions a { font-size: 13px; color: #667eea; text-decoration: none; margin-left: 12px; }
 .history-actions a:hover { text-decoration: underline; }
 .empty-state { text-align: center; color: #999; padding: 32px; font-size: 14px; }
+
+/* Batch group in history */
+.history-batch-group { background: #f8f9fb; border-radius: 8px; padding: 8px 12px;
+                       margin-bottom: 4px; }
+.history-batch-header { font-size: 13px; color: #888; font-weight: 600; padding: 4px 0 8px; }
+.history-batch-group .history-item { padding: 8px 0; }
+.history-batch-group .history-item:first-child { padding-top: 0; }
 </style>
 </head>
 <body>
@@ -99,8 +132,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <div class="input-card">
     <div class="input-row">
       <div class="input-group" style="flex: 2;">
-        <label>股票代码</label>
-        <input type="text" id="ticker" placeholder="输入代码：688599、00700.HK 或 AAPL" autofocus>
+        <label>股票代码（支持批量，用空格或逗号分隔）</label>
+        <input type="text" id="ticker" placeholder="688599, 002149, AAPL" autofocus>
       </div>
       <div class="input-group">
         <label>分析日期</label>
@@ -110,7 +143,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
     </div>
   </div>
 
-  <!-- Progress -->
+  <!-- Batch Progress -->
+  <div class="batch-card" id="batchCard">
+    <div class="batch-title" id="batchTitle">批量分析进度</div>
+    <ul class="batch-list" id="batchList"></ul>
+  </div>
+
+  <!-- Single-task Progress -->
   <div class="progress-card" id="progressCard">
     <div class="progress-title" id="progressTitle">正在分析...</div>
     <ul class="steps" id="steps">
@@ -129,7 +168,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
     </ul>
   </div>
 
-  <!-- Result -->
+  <!-- Result (single task) -->
   <div class="result-card" id="resultCard">
     <div class="result-ticker" id="resultTicker"></div>
     <div class="signal" id="resultSignal"></div>
@@ -146,10 +185,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 </div>
 
 <script>
-// Set default date to today
 document.getElementById('date').value = new Date().toISOString().slice(0, 10);
 
-// Allow Enter key to trigger analysis
 document.getElementById('ticker').addEventListener('keydown', e => {
   if (e.key === 'Enter') startAnalysis();
 });
@@ -161,26 +198,54 @@ const STEP_ORDER = [
   'generating', 'pdf'
 ];
 
+const STAGE_LABELS = {
+  'collecting': '采集数据',
+  'data_ready': '数据就绪',
+  'analyzing': 'AI 分析',
+  'market_report': '市场分析',
+  'sentiment_report': '社交分析',
+  'news_report': '新闻分析',
+  'fundamentals_report': '基本面分析',
+  'invest_debate': '投资辩论',
+  'trader': '交易策略',
+  'risk_debate': '风控评估',
+  'final_decision': '最终决策',
+  'generating': '生成报告',
+  'pdf': '转换 PDF',
+};
+
 let currentTaskId = null;
+let currentBatchId = null;
 let eventSource = null;
+let batchPollTimer = null;
+
+// ========== Single-task analysis (unchanged flow) ==========
 
 async function startAnalysis() {
-  const ticker = document.getElementById('ticker').value.trim();
+  const raw = document.getElementById('ticker').value.trim();
   const date = document.getElementById('date').value;
-  if (!ticker) { alert('请输入股票代码'); return; }
+  if (!raw) { alert('请输入股票代码'); return; }
 
+  const tickers = raw.split(/[,，\s]+/).filter(Boolean);
+
+  if (tickers.length > 1) {
+    startBatchAnalysis(tickers, date);
+    return;
+  }
+
+  // Single ticker flow
+  const ticker = tickers[0];
   const btn = document.getElementById('btnAnalyze');
   btn.disabled = true;
   btn.textContent = '分析中...';
 
-  // Reset progress
+  // Reset UI
   const progressCard = document.getElementById('progressCard');
   progressCard.classList.add('active');
+  document.getElementById('batchCard').classList.remove('active');
   document.getElementById('resultCard').classList.remove('active');
-  document.querySelectorAll('.steps li').forEach(li => {
-    li.className = '';
-  });
-  // Show/hide fundamentals step based on ETF detection (simple heuristic)
+  document.querySelectorAll('.steps li').forEach(li => { li.className = ''; });
+
   const code = ticker.replace(/\.(SS|SZ)$/i, '').replace(/^(sh|sz)/i, '');
   const isEtf = /^(510|511|512|513|515|516|517|518|560|561|562|563|588|589|159)\d{3}$/.test(code);
   document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
@@ -194,7 +259,6 @@ async function startAnalysis() {
     if (!resp.ok) {
       const err = await resp.json();
       const msg = err.detail || '提交失败';
-      progressCard.classList.add('active');
       document.getElementById('progressTitle').textContent = msg;
       document.getElementById('progressTitle').style.color = '#e74c3c';
       setTimeout(() => { document.getElementById('progressTitle').style.color = ''; }, 5000);
@@ -204,10 +268,9 @@ async function startAnalysis() {
     }
     const data = await resp.json();
     currentTaskId = data.task_id;
+    currentBatchId = null;
     document.getElementById('progressTitle').textContent =
-      `正在分析 ${data.ticker}...`;
-
-    // Start SSE
+      `开始分析 ${data.name && data.name !== data.ticker ? data.name + ' (' + data.ticker + ')' : data.ticker}...`;
     listenProgress(data.task_id);
   } catch (e) {
     alert('请求失败: ' + e.message);
@@ -226,7 +289,6 @@ function listenProgress(taskId) {
     const event = JSON.parse(e.data);
     const stage = event.stage;
 
-    // Update title with resolved stock name
     if (stage === 'init') {
       document.getElementById('progressTitle').textContent = event.message + '...';
       return;
@@ -255,17 +317,14 @@ function listenProgress(taskId) {
       return;
     }
 
-    // Skip stages without a UI element (e.g. "analyzing", "data_bundle")
     const stageEl = document.getElementById('step-' + stage);
     if (!stageEl) return;
 
-    // Mark all steps before this one as done
     for (const s of STEP_ORDER) {
       if (s === stage) break;
       markStep(s, 'done');
       completedSteps.add(s);
     }
-    // Mark current as active
     document.querySelectorAll('.steps li.active').forEach(li => {
       if (li.id !== 'step-' + stage) {
         li.classList.remove('active');
@@ -276,7 +335,6 @@ function listenProgress(taskId) {
   };
 
   eventSource.onerror = function() {
-    // Connection lost — check if task completed
     eventSource.close();
     setTimeout(() => {
       document.getElementById('btnAnalyze').disabled = false;
@@ -300,7 +358,6 @@ function showResult(taskId, signal) {
   card.classList.add('active');
   document.getElementById('progressTitle').textContent = '分析完成';
 
-  // Mark all visible steps as done
   document.querySelectorAll('.steps li').forEach(li => {
     if (li.style.display !== 'none') {
       li.className = 'done';
@@ -324,6 +381,182 @@ function showResult(taskId, signal) {
   `;
 }
 
+// ========== Batch analysis ==========
+
+async function startBatchAnalysis(tickers, date) {
+  const btn = document.getElementById('btnAnalyze');
+  btn.disabled = true;
+  btn.textContent = '分析中...';
+
+  document.getElementById('progressCard').classList.remove('active');
+  document.getElementById('resultCard').classList.remove('active');
+
+  try {
+    const resp = await fetch('/api/analyze/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickers, date }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      const msg = err.detail || '提交失败';
+      alert(msg);
+      btn.disabled = false;
+      btn.textContent = '开始分析';
+      return;
+    }
+    const data = await resp.json();
+    currentBatchId = data.batch_id;
+    currentTaskId = null;
+
+    showBatchCard(data.tasks);
+    startBatchPolling(data.batch_id);
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '开始分析';
+  }
+}
+
+function showBatchCard(taskList) {
+  const card = document.getElementById('batchCard');
+  card.classList.add('active');
+
+  const title = document.getElementById('batchTitle');
+  title.textContent = `批量分析进度 (0/${taskList.length} 完成)`;
+
+  const list = document.getElementById('batchList');
+  list.innerHTML = taskList.map(t => `
+    <li class="batch-item pending" id="batch-${t.task_id}">
+      <span class="batch-icon"></span>
+      <div class="batch-item-info">
+        <div class="batch-item-name">${esc(t.name)} (${esc(t.ticker)})</div>
+        <div class="batch-item-stage">等待中</div>
+      </div>
+    </li>
+  `).join('');
+}
+
+let batchEventSource = null;
+
+function startBatchPolling(batchId) {
+  if (batchPollTimer) clearInterval(batchPollTimer);
+
+  async function poll() {
+    try {
+      const resp = await fetch(`/api/batch/${batchId}`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      updateBatchUI(data);
+
+      // Connect SSE to the currently active task for fine-grained updates
+      const activeTask = data.tasks.find(t =>
+        t.status !== 'done' && t.status !== 'failed' && t.status !== 'pending'
+      );
+      if (activeTask && (!batchEventSource || batchEventSource._taskId !== activeTask.task_id)) {
+        if (batchEventSource) batchEventSource.close();
+        batchEventSource = new EventSource(`/api/progress/${activeTask.task_id}`);
+        batchEventSource._taskId = activeTask.task_id;
+        batchEventSource.onmessage = function(e) {
+          const event = JSON.parse(e.data);
+          if (event.stage === 'done' || event.stage === 'error') {
+            batchEventSource.close();
+            batchEventSource = null;
+            poll();
+            return;
+          }
+          const el = document.getElementById('batch-' + activeTask.task_id);
+          if (el) {
+            const stageDiv = el.querySelector('.batch-item-stage');
+            if (stageDiv && event.stage !== 'init') {
+              stageDiv.textContent = event.message;
+            }
+          }
+        };
+      }
+
+      if (data.done >= data.total) {
+        clearInterval(batchPollTimer);
+        batchPollTimer = null;
+        if (batchEventSource) { batchEventSource.close(); batchEventSource = null; }
+        document.getElementById('btnAnalyze').disabled = false;
+        document.getElementById('btnAnalyze').textContent = '开始分析';
+        loadHistory();
+      }
+    } catch (e) {
+      console.error('Batch poll error:', e);
+    }
+  }
+
+  poll();
+  batchPollTimer = setInterval(poll, 3000);
+}
+
+function updateBatchUI(data) {
+  const title = document.getElementById('batchTitle');
+  const doneCount = data.tasks.filter(t => t.status === 'done').length;
+  const failCount = data.tasks.filter(t => t.status === 'failed').length;
+  let titleText = `批量分析进度 (${doneCount}/${data.total} 完成)`;
+  if (failCount > 0) titleText += ` · ${failCount} 失败`;
+  if (data.done >= data.total) titleText = `批量分析完成 (${doneCount}/${data.total})`;
+  title.textContent = titleText;
+
+  for (const t of data.tasks) {
+    const el = document.getElementById('batch-' + t.task_id);
+    if (!el) continue;
+
+    let cls = 'batch-item ';
+    let icon = '';
+    let stageText = '';
+    let extra = '';
+
+    if (t.status === 'done') {
+      cls += 'done';
+      icon = '✓';
+      stageText = '完成';
+      const sigCls = (t.signal || '').toLowerCase().replace(' ', '-');
+      extra = t.signal ? `<span class="batch-item-signal ${sigCls}">${esc(t.signal)}</span>` : '';
+      const actions = [];
+      if (t.has_pdf) actions.push(`<a href="/api/report/${t.task_id}" download>PDF</a>`);
+      if (t.has_html) actions.push(`<a href="/api/report/${t.task_id}/html" target="_blank">HTML</a>`);
+      if (actions.length) extra += `<span class="batch-item-actions">${actions.join('')}</span>`;
+    } else if (t.status === 'failed') {
+      cls += 'failed';
+      icon = '✗';
+      stageText = '失败';
+    } else if (t.status === 'pending') {
+      cls += 'pending';
+      stageText = '等待中';
+    } else {
+      cls += 'active';
+      stageText = t.stage_message || '分析中';
+    }
+
+    el.className = cls;
+    el.querySelector('.batch-icon').innerHTML = icon;
+
+    // Preserve SSE-updated stage text for active tasks
+    if (t.status !== 'pending' || !el.querySelector('.batch-item-stage').textContent) {
+      if (t.status === 'done' || t.status === 'failed' || t.status === 'pending') {
+        el.querySelector('.batch-item-stage').textContent = stageText;
+      }
+    }
+
+    // Update extra content (signal + actions)
+    let extraContainer = el.querySelector('.batch-item-extra');
+    if (extra) {
+      if (!extraContainer) {
+        extraContainer = document.createElement('div');
+        extraContainer.className = 'batch-item-extra';
+        el.appendChild(extraContainer);
+      }
+      extraContainer.innerHTML = extra;
+    }
+  }
+}
+
+// ========== History ==========
+
 async function loadHistory() {
   try {
     const resp = await fetch('/api/tasks');
@@ -336,23 +569,61 @@ async function loadHistory() {
       return;
     }
 
-    list.innerHTML = completed.map(t => {
-      const signalCls = (t.signal || '').toLowerCase();
-      const actions = [];
-      if (t.has_pdf) actions.push(`<a href="/api/report/${t.task_id}" download>PDF</a>`);
-      if (t.has_html) actions.push(`<a href="/api/report/${t.task_id}/html" target="_blank">HTML</a>`);
-      return `<li class="history-item">
-        <div class="history-info">
-          <span class="ticker">${esc(t.name)} (${esc(t.ticker)})</span>
-          <div class="meta">${esc(t.created_at)}${t.date ? ' | ' + esc(t.date) : ''}</div>
-        </div>
-        ${t.signal ? `<span class="history-signal ${signalCls}">${esc(t.signal)}</span>` : ''}
-        <div class="history-actions">${actions.join('')}</div>
-      </li>`;
-    }).join('');
+    // Group by batch_id
+    const groups = [];
+    const standalone = [];
+    const batchMap = {};
+
+    for (const t of completed) {
+      if (t.batch_id) {
+        if (!batchMap[t.batch_id]) {
+          batchMap[t.batch_id] = [];
+          groups.push(t.batch_id);
+        }
+        batchMap[t.batch_id].push(t);
+      } else {
+        standalone.push(t);
+      }
+    }
+
+    let html = '';
+
+    // Render batch groups
+    for (const bid of groups) {
+      const items = batchMap[bid];
+      const groupTime = items[0]?.created_at || '';
+      html += `<div class="history-batch-group">`;
+      html += `<div class="history-batch-header">批量分析 (${esc(groupTime)})</div>`;
+      for (const t of items) {
+        html += renderHistoryItem(t);
+      }
+      html += `</div>`;
+    }
+
+    // Render standalone items
+    for (const t of standalone) {
+      html += renderHistoryItem(t);
+    }
+
+    list.innerHTML = html;
   } catch (e) {
     console.error('Failed to load history:', e);
   }
+}
+
+function renderHistoryItem(t) {
+  const signalCls = (t.signal || '').toLowerCase().replace(' ', '-');
+  const actions = [];
+  if (t.has_pdf) actions.push(`<a href="/api/report/${t.task_id}" download>PDF</a>`);
+  if (t.has_html) actions.push(`<a href="/api/report/${t.task_id}/html" target="_blank">HTML</a>`);
+  return `<li class="history-item">
+    <div class="history-info">
+      <span class="ticker">${esc(t.name)} (${esc(t.ticker)})</span>
+      <div class="meta">${esc(t.created_at)}${t.date ? ' | ' + esc(t.date) : ''}</div>
+    </div>
+    ${t.signal ? `<span class="history-signal ${signalCls}">${esc(t.signal)}</span>` : ''}
+    <div class="history-actions">${actions.join('')}</div>
+  </li>`;
 }
 
 function esc(s) {
@@ -362,12 +633,35 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ========== Resume on page load ==========
+
 async function resumeActiveTask() {
   try {
     const resp = await fetch('/api/tasks');
     const data = await resp.json();
+
+    // Check for active batch first
+    const activeBatchTask = data.find(t =>
+      t.batch_id && t.status !== 'done' && t.status !== 'failed' && !t.task_id.startsWith('hist-')
+    );
+    if (activeBatchTask) {
+      currentBatchId = activeBatchTask.batch_id;
+      const batchResp = await fetch(`/api/batch/${activeBatchTask.batch_id}`);
+      if (batchResp.ok) {
+        const batchData = await batchResp.json();
+        const btn = document.getElementById('btnAnalyze');
+        btn.disabled = true;
+        btn.textContent = '分析中...';
+        showBatchCard(batchData.tasks);
+        updateBatchUI(batchData);
+        startBatchPolling(activeBatchTask.batch_id);
+        return;
+      }
+    }
+
+    // Check for active single task
     const active = data.find(t =>
-      t.status !== 'done' && t.status !== 'failed' && !t.task_id.startsWith('hist-')
+      t.status !== 'done' && t.status !== 'failed' && !t.task_id.startsWith('hist-') && !t.batch_id
     );
     if (!active) return;
 
@@ -390,7 +684,7 @@ async function resumeActiveTask() {
     document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
 
     document.getElementById('progressTitle').textContent =
-      `正在分析 ${active.name || active.ticker}...`;
+      `正在分析 ${active.name && active.name !== active.ticker ? active.name + ' (' + active.ticker + ')' : active.ticker}...`;
 
     listenProgress(active.task_id);
   } catch (e) {
@@ -398,7 +692,6 @@ async function resumeActiveTask() {
   }
 }
 
-// Load history and resume active task on page load
 loadHistory();
 resumeActiveTask();
 </script>
