@@ -22,6 +22,9 @@ from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from dotenv import find_dotenv, load_dotenv
+load_dotenv(find_dotenv(usecwd=True))
+
 from tradingagents.dataflows.market_utils import detect_exchange, is_etf, is_hk_stock, normalize_hk_symbol
 from tradingagents.dataflows.utils import safe_ticker_component
 
@@ -49,7 +52,7 @@ class TaskInfo:
     ticker: str
     name: str
     date: str
-    status: str = "pending"  # pending | collecting | analyzing | generating | done | failed
+    status: str = "pending"  # pending | collecting | analyzing | generating | done | failed | cancelled
     signal: str = ""
     error: str = ""
     progress: Queue = field(default_factory=Queue)
@@ -58,6 +61,7 @@ class TaskInfo:
     pdf_path: str = ""
     batch_id: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    cancelled: bool = False
 
 
 @dataclass
@@ -83,8 +87,11 @@ def _worker_loop():
         task_id = _work_queue.get()
         try:
             task = tasks.get(task_id)
-            if task and task.status == "pending":
+            if task and task.status == "pending" and not task.cancelled:
                 _run_analysis(task)
+            elif task and task.cancelled:
+                task.status = "cancelled"
+                _emit(task, "cancelled", "任务已取消")
         except Exception:
             logger.exception("Worker failed for task %s", task_id)
         finally:
@@ -226,6 +233,16 @@ def _emit(task: TaskInfo, stage: str, message: str):
     logger.info("[%s] %s: %s", task.task_id[:8], stage, message)
 
 
+class _TaskCancelled(Exception):
+    """Raised when a task is cancelled mid-flight."""
+
+
+def _check_cancelled(task: TaskInfo):
+    """Raise _TaskCancelled if the task has been cancelled."""
+    if task.cancelled:
+        raise _TaskCancelled(f"{task.ticker} 任务已被用户取消")
+
+
 def _run_analysis(task: TaskInfo):
     """Run the full analysis pipeline in a background thread."""
     try:
@@ -240,6 +257,8 @@ def _run_analysis(task: TaskInfo):
         set_config(config)
         analysts = _get_analysts(task.ticker)
 
+        _check_cancelled(task)
+
         # Phase 1: Data collection
         task.status = "collecting"
         _emit(task, "collecting", "正在采集市场数据...")
@@ -250,6 +269,8 @@ def _run_analysis(task: TaskInfo):
             save_dir=OUTPUT_DIR,
         )
         _emit(task, "data_ready", "数据采集完成")
+
+        _check_cancelled(task)
 
         # Phase 2: LLM analysis via graph streaming
         task.status = "analyzing"
@@ -275,6 +296,7 @@ def _run_analysis(task: TaskInfo):
         trace = []
         seen_stages = set()
         for chunk in graph.graph.stream(init_state, **args):
+            _check_cancelled(task)
             trace.append(chunk)
 
             if chunk.get("data_bundle") and "data_bundle" not in seen_stages:
@@ -335,6 +357,8 @@ def _run_analysis(task: TaskInfo):
         except Exception as exc:
             logger.warning("Failed to save final state: %s", exc)
 
+        _check_cancelled(task)
+
         # Phase 3: Generate reports
         task.status = "generating"
         _emit(task, "generating", "正在生成报告...")
@@ -352,6 +376,9 @@ def _run_analysis(task: TaskInfo):
         task.status = "done"
         _emit(task, "done", f"分析完成！信号: {signal}")
 
+    except _TaskCancelled:
+        task.status = "cancelled"
+        _emit(task, "cancelled", f"{task.ticker} 分析已取消")
     except Exception as e:
         logger.exception("Analysis failed for %s", task.ticker)
         task.status = "failed"
@@ -626,10 +653,16 @@ async def progress_stream(task_id: str):
                 if event.get("stage") in ("done", "error"):
                     break
             except Empty:
-                if task.status in ("done", "failed"):
+                if task.status in ("done", "failed", "cancelled"):
+                    if task.status == "cancelled":
+                        stage, msg = "cancelled", f"{task.ticker} 分析已取消"
+                    elif task.status == "done":
+                        stage, msg = "done", task.signal
+                    else:
+                        stage, msg = "error", task.error
                     final = {
-                        "stage": "done" if task.status == "done" else "error",
-                        "message": task.signal if task.status == "done" else task.error,
+                        "stage": stage,
+                        "message": msg,
                         "timestamp": datetime.now().strftime("%H:%M:%S"),
                     }
                     yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
@@ -681,3 +714,51 @@ async def view_html(task_id: str):
     if not task.html_path or not Path(task.html_path).exists():
         raise HTTPException(404, "HTML 报告尚未生成")
     return FileResponse(task.html_path, media_type="text/html")
+
+
+@app.post("/api/task/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a running or pending task."""
+    with _tasks_lock:
+        task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "任务不存在")
+    if task.status in ("done", "failed", "cancelled"):
+        return {"message": f"任务已处于终态: {task.status}"}
+    task.cancelled = True
+    return {"message": f"{task.ticker} 任务已标记取消，将在下一个检查点中止"}
+
+
+@app.post("/api/batch/{batch_id}/cancel")
+async def cancel_batch(batch_id: str):
+    """Cancel all tasks in a batch."""
+    with _tasks_lock:
+        batch = batches.get(batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+    cancelled = []
+    for tid in batch.task_ids:
+        task = tasks.get(tid)
+        if task and task.status not in ("done", "failed", "cancelled"):
+            task.cancelled = True
+            cancelled.append(task.ticker)
+    return {"message": f"已取消 {len(cancelled)} 个任务", "cancelled": cancelled}
+
+
+@app.post("/api/tasks/clear")
+async def clear_tasks():
+    """Clear all completed/failed/cancelled tasks from memory."""
+    with _tasks_lock:
+        to_remove = [
+            tid for tid, t in tasks.items()
+            if t.status in ("done", "failed", "cancelled")
+        ]
+        for tid in to_remove:
+            del tasks[tid]
+        stale_batches = [
+            bid for bid, b in batches.items()
+            if all(tasks.get(tid) is None for tid in b.task_ids)
+        ]
+        for bid in stale_batches:
+            del batches[bid]
+    return {"removed_tasks": len(to_remove), "removed_batches": len(stale_batches)}

@@ -223,7 +223,16 @@ class TradingAgentsGraph:
             self.memory_log.batch_update_with_outcomes(updates)
 
     def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
+        from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
+
         identity = resolve_instrument_identity(ticker)
+
+        if not identity.get("company_name") and (is_a_share(ticker) or is_hk_stock(ticker)):
+            raise RuntimeError(
+                f"无法识别 {ticker} 的公司名称：所有数据源（AKShare、东方财富、新浪、腾讯）"
+                f"均返回失败。请检查网络连接或确认代码是否正确。"
+            )
+
         return build_instrument_context(ticker, asset_type, identity)
 
     def collect_data(
