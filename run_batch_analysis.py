@@ -105,6 +105,111 @@ def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _check_data_completeness(bundle: DataBundle) -> list[dict]:
+    """Scan the bundle for missing or unavailable data fields.
+
+    Returns a list of dicts with keys: category, field, status.
+    status is one of: "ok", "missing", "unavailable".
+    """
+    issues: list[dict] = []
+
+    def _check_field(category: str, field: str, value: str):
+        if not value or not value.strip():
+            issues.append({"category": category, "field": field, "status": "missing"})
+        elif "<unavailable" in value.lower():
+            issues.append({"category": category, "field": field, "status": "unavailable"})
+
+    def _check_dict_fields(category: str, d: dict[str, str]):
+        unavail = 0
+        total = len(d)
+        for k, v in d.items():
+            if not v or "<unavailable" in v.lower() or "data unavailable" in v.lower():
+                unavail += 1
+        if total > 0 and unavail == total:
+            issues.append({"category": category, "field": f"全部 {total} 项", "status": "unavailable"})
+        elif unavail > 0:
+            issues.append({"category": category, "field": f"{unavail}/{total} 项", "status": "unavailable"})
+
+    if bundle.market:
+        _check_field("行情数据", "股价/成交量", bundle.market.stock_data)
+        _check_field("行情数据", "验证快照", bundle.market.verified_snapshot)
+        if not bundle.market.indicators:
+            issues.append({"category": "行情数据", "field": "技术指标", "status": "missing"})
+    else:
+        issues.append({"category": "行情数据", "field": "全部", "status": "missing"})
+
+    if bundle.sentiment:
+        _check_field("情绪数据", "个股新闻", bundle.sentiment.ticker_news)
+        _check_field("情绪数据", "StockTwits/股吧", bundle.sentiment.stocktwits)
+        _check_field("情绪数据", "Reddit/新浪", bundle.sentiment.reddit)
+    else:
+        issues.append({"category": "情绪数据", "field": "全部", "status": "missing"})
+
+    if bundle.news:
+        _check_field("新闻数据", "个股新闻", bundle.news.ticker_news)
+        _check_field("新闻数据", "全球/宏观新闻", bundle.news.global_news)
+        _check_field("新闻数据", "内部交易", bundle.news.insider_transactions)
+        if bundle.news.macro_indicators:
+            _check_dict_fields("宏观指标", bundle.news.macro_indicators)
+        if bundle.news.prediction_markets:
+            _check_dict_fields("市场信号", bundle.news.prediction_markets)
+    else:
+        issues.append({"category": "新闻数据", "field": "全部", "status": "missing"})
+
+    if bundle.fundamentals:
+        _check_field("财务数据", "概览", bundle.fundamentals.overview)
+        _check_field("财务数据", "资产负债表(季度)", bundle.fundamentals.balance_sheet_quarterly)
+        _check_field("财务数据", "资产负债表(年度)", bundle.fundamentals.balance_sheet_annual)
+        _check_field("财务数据", "现金流(季度)", bundle.fundamentals.cashflow_quarterly)
+        _check_field("财务数据", "现金流(年度)", bundle.fundamentals.cashflow_annual)
+        _check_field("财务数据", "利润表(季度)", bundle.fundamentals.income_quarterly)
+        _check_field("财务数据", "利润表(年度)", bundle.fundamentals.income_annual)
+    elif "fundamentals" in (bundle.metadata.selected_analysts or []):
+        issues.append({"category": "财务数据", "field": "全部", "status": "missing"})
+
+    return issues
+
+
+def _build_completeness_banner(issues: list[dict]) -> str:
+    """Build an HTML banner summarizing data completeness issues."""
+    if not issues:
+        return ""
+
+    missing = [i for i in issues if i["status"] == "missing"]
+    unavailable = [i for i in issues if i["status"] == "unavailable"]
+
+    rows = []
+    for issue in issues:
+        icon = "❌" if issue["status"] == "missing" else "⚠️"
+        label = "缺失" if issue["status"] == "missing" else "不可用"
+        css = "status-empty" if issue["status"] == "missing" else "status-partial"
+        rows.append(
+            f'<tr><td>{escape_html(issue["category"])}</td>'
+            f'<td>{escape_html(issue["field"])}</td>'
+            f'<td class="{css}">{icon} {label}</td></tr>'
+        )
+
+    summary_parts = []
+    if missing:
+        summary_parts.append(f"{len(missing)} 项数据缺失")
+    if unavailable:
+        summary_parts.append(f"{len(unavailable)} 项数据不可用")
+    summary = "、".join(summary_parts)
+
+    return f"""
+<div class="section" style="background: #fff8f0; border: 2px solid #ff9800; border-left-width: 6px;">
+<h2 style="color: #e65100; border-bottom-color: #ff9800;">⚠️ 数据完整性警告</h2>
+<p style="margin-bottom: 12px; color: #bf360c; font-weight: 600;">
+本次分析存在 {summary}，可能影响分析结论的准确性。请结合实际情况审慎参考。
+</p>
+<table class="data-table" style="font-size: 13px;">
+<tr><th style="width:120px;">数据类别</th><th>字段</th><th style="width:100px;">状态</th></tr>
+{''.join(rows)}
+</table>
+</div>
+"""
+
+
 def generate_html_report(ticker: str, name: str, final_state: dict, bundle: DataBundle) -> Path:
     from test_output.run_baba_analysis import (
         build_analysis_sections,
@@ -126,6 +231,9 @@ def generate_html_report(ticker: str, name: str, final_state: dict, bundle: Data
         else:
             msg = f'用户输入日期 <strong>{escape_html(original_date)}</strong> 为非交易日，已自动校正为 <strong>{escape_html(trade_date)}</strong>'
         date_note = f'<p class="date-correction">⚠️ {msg}</p>'
+
+    completeness_issues = _check_data_completeness(bundle)
+    completeness_banner = _build_completeness_banner(completeness_issues)
 
     data_tables_html = build_data_tables(bundle)
     decision_html = build_decision_section(final_state)
@@ -197,6 +305,8 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 </div>
 
 {date_note}
+
+{completeness_banner}
 
 <div class="section toc">
 <h2>目录</h2>

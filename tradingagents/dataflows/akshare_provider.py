@@ -250,7 +250,7 @@ def get_fundamentals(
     try:
         abstract = call_with_retry(ak.stock_financial_abstract_ths, symbol=code, indicator="按报告期")
         if abstract is not None and not abstract.empty:
-            latest = abstract.iloc[0]
+            latest = abstract.iloc[-1]
             for col in abstract.columns:
                 if col not in result:
                     val = latest[col]
@@ -270,14 +270,10 @@ def get_balance_sheet(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get A-share balance sheet data from AKShare."""
-    ak = _get_ak()
-    code = a_share_to_akshare_symbol(ticker)
-
-    df = call_with_retry(ak.stock_balance_sheet_by_report_em, symbol=code)
-    if df is None or df.empty:
-        raise NoMarketDataError(ticker, ticker, "AKShare returned no balance sheet data")
-
+    """Get A-share balance sheet data from AKShare, with EastMoney HTTP fallback."""
+    df = _try_akshare_financial(ticker, "stock_balance_sheet_by_report_em", "balance sheet")
+    if df is None:
+        df = _fetch_eastmoney_financial(ticker, "RPT_DMSK_FN_BALANCE", "balance sheet")
     return _format_financial_statement(df, ticker, "Balance Sheet", freq, curr_date)
 
 
@@ -286,14 +282,10 @@ def get_cashflow(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get A-share cash flow data from AKShare."""
-    ak = _get_ak()
-    code = a_share_to_akshare_symbol(ticker)
-
-    df = call_with_retry(ak.stock_cash_flow_sheet_by_report_em, symbol=code)
-    if df is None or df.empty:
-        raise NoMarketDataError(ticker, ticker, "AKShare returned no cash flow data")
-
+    """Get A-share cash flow data from AKShare, with EastMoney HTTP fallback."""
+    df = _try_akshare_financial(ticker, "stock_cash_flow_sheet_by_report_em", "cash flow")
+    if df is None:
+        df = _fetch_eastmoney_financial(ticker, "RPT_DMSK_FN_CASHFLOW", "cash flow")
     return _format_financial_statement(df, ticker, "Cash Flow", freq, curr_date)
 
 
@@ -302,15 +294,61 @@ def get_income_statement(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get A-share income statement data from AKShare."""
-    ak = _get_ak()
-    code = a_share_to_akshare_symbol(ticker)
-
-    df = call_with_retry(ak.stock_profit_sheet_by_report_em, symbol=code)
-    if df is None or df.empty:
-        raise NoMarketDataError(ticker, ticker, "AKShare returned no income data")
-
+    """Get A-share income statement data from AKShare, with EastMoney HTTP fallback."""
+    df = _try_akshare_financial(ticker, "stock_profit_sheet_by_report_em", "income")
+    if df is None:
+        df = _fetch_eastmoney_financial(ticker, "RPT_DMSK_FN_INCOME", "income")
     return _format_financial_statement(df, ticker, "Income Statement", freq, curr_date)
+
+
+def _try_akshare_financial(ticker: str, ak_func_name: str, label: str) -> pd.DataFrame | None:
+    """Try fetching financial data via AKShare; return None on failure."""
+    try:
+        ak = _get_ak()
+        code = a_share_to_akshare_symbol(ticker)
+        func = getattr(ak, ak_func_name)
+        df = call_with_retry(func, symbol=code)
+        if df is not None and not df.empty:
+            return df
+    except (TypeError, AttributeError, KeyError) as exc:
+        logger.warning("AKShare %s failed for %s (curl_cffi blocked?): %s", label, ticker, exc)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("AKShare %s failed for %s: %s", label, ticker, exc)
+    return None
+
+
+def _fetch_eastmoney_financial(
+    ticker: str, report_name: str, label: str, page_size: int = 8,
+) -> pd.DataFrame:
+    """Fetch financial statement data from EastMoney datacenter API (stdlib only).
+
+    Uses urllib which respects NO_PROXY=*, bypassing the curl_cffi proxy issue.
+    """
+    import re
+    from urllib.request import Request, urlopen
+
+    code = re.sub(r"\.(SZ|SS)$", "", ticker, flags=re.IGNORECASE)
+    url = (
+        "https://datacenter.eastmoney.com/securities/api/data/v1/get"
+        f"?reportName={report_name}"
+        "&columns=ALL"
+        f"&filter=(SECURITY_CODE%3D%22{code}%22)"
+        f"&pageSize={page_size}"
+        "&sortColumns=REPORT_DATE&sortTypes=-1"
+    )
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        raw = json.loads(urlopen(req, timeout=15).read().decode("utf-8"))
+    except Exception as exc:
+        raise NoMarketDataError(
+            ticker, ticker, f"EastMoney {label} API failed: {exc}",
+        ) from exc
+
+    rows = (raw.get("result") or {}).get("data") or []
+    if not rows:
+        raise NoMarketDataError(ticker, ticker, f"EastMoney returned no {label} data")
+
+    return pd.DataFrame(rows)
 
 
 def _format_financial_statement(

@@ -132,11 +132,39 @@ def resolve_instrument_identity(ticker: str) -> dict:
 
 
 def _resolve_a_share_identity(normalized: str) -> dict:
-    """Resolve A-share company identity via AKShare (EastMoney)."""
+    """Resolve A-share company identity with 4-tier fallback chain.
+
+    1. AKShare (curl_cffi) — richest data but blocked by system proxy
+    2. EastMoney HTTP API (urllib) — suggest + quote, good detail
+    3. Sina Finance suggest API (urllib, gbk) — lightweight name-only
+    4. Tencent Finance quote API (urllib, gbk) — lightweight name-only
+    """
+    from tradingagents.dataflows.market_utils import get_board_name
+
+    identity = _resolve_a_share_identity_akshare(normalized)
+    if identity.get("company_name"):
+        return identity
+
+    for fallback in (
+        _resolve_identity_eastmoney_api,
+        _resolve_identity_sina_api,
+        _resolve_identity_tencent_api,
+    ):
+        identity = fallback(normalized)
+        if identity.get("company_name"):
+            identity.setdefault("exchange", get_board_name(normalized))
+            identity.setdefault("quote_type", "EQUITY")
+            return identity
+
+    return {}
+
+
+def _resolve_a_share_identity_akshare(normalized: str) -> dict:
+    """Try AKShare (uses curl_cffi internally)."""
     try:
         import akshare as ak
     except ImportError:
-        logger.debug("akshare not installed, cannot resolve A-share identity for %s", normalized)
+        logger.debug("akshare not installed, skipping for %s", normalized)
         return {}
 
     from tradingagents.dataflows.market_utils import (
@@ -168,12 +196,150 @@ def _resolve_a_share_identity(normalized: str) -> dict:
     return identity
 
 
+def _resolve_identity_eastmoney_api(ticker: str) -> dict:
+    """Lightweight fallback using EastMoney suggest + quote APIs (stdlib only).
+
+    Works even when curl_cffi is blocked by a system proxy, because it
+    uses urllib which respects NO_PROXY=*.
+    """
+    import json
+    import re
+    from urllib.request import Request, urlopen
+
+    code = re.sub(r"\.(SZ|SS|HK)$", "", ticker, flags=re.IGNORECASE)
+    identity: dict[str, str] = {}
+
+    try:
+        url = (
+            "https://searchapi.eastmoney.com/api/suggest/get"
+            f"?input={code}&type=14"
+            "&token=D43BF722C8E33BDC906FB84D85E326E8"
+        )
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = json.loads(urlopen(req, timeout=8).read().decode("utf-8"))
+        items = data.get("QuotationCodeTable", {}).get("Data", [])
+        if items:
+            name = _clean_identity_value(items[0].get("Name", ""))
+            if name:
+                identity["company_name"] = name
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EastMoney suggest API failed for %s: %s", ticker, exc)
+
+    if not identity.get("company_name"):
+        return identity
+
+    suffix = ticker.upper()
+    if suffix.endswith(".SZ"):
+        secid = f"0.{code}"
+    elif suffix.endswith(".SS"):
+        secid = f"1.{code}"
+    elif suffix.endswith(".HK"):
+        secid = f"116.{code.zfill(5)}"
+    else:
+        return identity
+
+    try:
+        url = (
+            f"https://push2.eastmoney.com/api/qt/stock/get"
+            f"?secid={secid}&fields=f57,f58,f127"
+        )
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        data = json.loads(urlopen(req, timeout=8).read().decode("utf-8"))
+        d = data.get("data", {})
+        industry = _clean_identity_value(str(d.get("f127", "")))
+        if industry and industry != "-":
+            identity["industry"] = industry
+            identity["sector"] = industry
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("EastMoney quote API failed for %s: %s", ticker, exc)
+
+    return identity
+
+
+def _resolve_identity_sina_api(ticker: str) -> dict:
+    """Fallback using Sina Finance suggest API (stdlib only, gbk encoding)."""
+    import re
+    from urllib.request import Request, urlopen
+
+    code = re.sub(r"\.(SZ|SS|HK)$", "", ticker, flags=re.IGNORECASE)
+    identity: dict[str, str] = {}
+
+    try:
+        url = f"https://suggest3.sinajs.cn/suggest/type=11,12&key={code}&name=suggestdata"
+        req = Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.sina.com.cn",
+        })
+        raw = urlopen(req, timeout=8).read().decode("gbk", errors="replace")
+        match = re.search(r'"([^"]*)"', raw)
+        if match:
+            parts = match.group(1).split(",")
+            if len(parts) >= 7 and parts[6].strip():
+                identity["company_name"] = parts[6].strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Sina suggest API failed for %s: %s", ticker, exc)
+
+    return identity
+
+
+def _resolve_identity_tencent_api(ticker: str) -> dict:
+    """Fallback using Tencent Finance quote API (stdlib only, gbk encoding)."""
+    import re
+    from urllib.request import Request, urlopen
+
+    code = re.sub(r"\.(SZ|SS|HK)$", "", ticker, flags=re.IGNORECASE)
+    suffix = ticker.upper()
+    if suffix.endswith(".SZ"):
+        qt_code = f"sz{code}"
+    elif suffix.endswith(".SS"):
+        qt_code = f"sh{code}"
+    elif suffix.endswith(".HK"):
+        qt_code = f"hk{code.zfill(5)}"
+    else:
+        return {}
+
+    identity: dict[str, str] = {}
+    try:
+        url = f"https://qt.gtimg.cn/q={qt_code}"
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        raw = urlopen(req, timeout=8).read().decode("gbk", errors="replace")
+        match = re.search(r'"([^"]*)"', raw)
+        if match:
+            parts = match.group(1).split("~")
+            if len(parts) >= 3 and parts[1].strip():
+                identity["company_name"] = parts[1].strip()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Tencent qt API failed for %s: %s", ticker, exc)
+
+    return identity
+
+
 def _resolve_hk_identity(normalized: str) -> dict:
-    """Resolve Hong Kong stock company identity via AKShare (EastMoney)."""
+    """Resolve Hong Kong stock company identity with 4-tier fallback chain."""
+    identity = _resolve_hk_identity_akshare(normalized)
+    if identity.get("company_name"):
+        return identity
+
+    for fallback in (
+        _resolve_identity_eastmoney_api,
+        _resolve_identity_sina_api,
+        _resolve_identity_tencent_api,
+    ):
+        identity = fallback(normalized)
+        if identity.get("company_name"):
+            identity.setdefault("exchange", "港股")
+            identity.setdefault("quote_type", "EQUITY")
+            return identity
+
+    return {}
+
+
+def _resolve_hk_identity_akshare(normalized: str) -> dict:
+    """Try AKShare for HK stocks (uses curl_cffi internally)."""
     try:
         import akshare as ak
     except ImportError:
-        logger.debug("akshare not installed, cannot resolve HK identity for %s", normalized)
+        logger.debug("akshare not installed, skipping HK identity for %s", normalized)
         return {}
 
     from tradingagents.dataflows.market_utils import hk_to_akshare_symbol
