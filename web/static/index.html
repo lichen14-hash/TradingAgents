@@ -13,6 +13,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
            color: white; padding: 32px 0; text-align: center; }
 .header h1 { font-size: 26px; font-weight: 700; }
 .header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+.header-nav { margin-top: 12px; display: flex; justify-content: center; gap: 8px; }
+.header-nav a { color: white; text-decoration: none; padding: 6px 20px; border-radius: 20px;
+                font-size: 14px; font-weight: 600; transition: background 0.2s; }
+.header-nav a:hover { background: rgba(255,255,255,0.2); }
+.header-nav a.active { background: rgba(255,255,255,0.3); }
 
 .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
 
@@ -125,6 +130,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 <div class="header">
   <h1>TradingAgents 分析平台</h1>
   <p>AI 多智能体股票分析系统</p>
+  <div class="header-nav">
+    <a href="/static/index.html" class="active">分析</a>
+    <a href="/static/backtest.html">回测</a>
+  </div>
 </div>
 
 <div class="container">

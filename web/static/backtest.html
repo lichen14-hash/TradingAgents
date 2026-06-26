@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TradingAgents 回测仪表盘</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+       background: #f5f7fa; color: #1a1a2e; line-height: 1.6; min-height: 100vh; }
+
+.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+           color: white; padding: 32px 0; text-align: center; }
+.header h1 { font-size: 26px; font-weight: 700; }
+.header p { font-size: 14px; opacity: 0.85; margin-top: 4px; }
+.header-nav { margin-top: 12px; display: flex; justify-content: center; gap: 8px; }
+.header-nav a { color: white; text-decoration: none; padding: 6px 20px; border-radius: 20px;
+                font-size: 14px; font-weight: 600; transition: background 0.2s; }
+.header-nav a:hover { background: rgba(255,255,255,0.2); }
+.header-nav a.active { background: rgba(255,255,255,0.3); }
+
+.container { max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+
+/* Summary cards */
+.summary-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+.summary-card { background: white; border-radius: 12px; padding: 20px; text-align: center;
+                box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+.summary-card .label { font-size: 13px; color: #888; font-weight: 600; }
+.summary-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.summary-card .value.green { color: #28a745; }
+.summary-card .value.blue { color: #667eea; }
+
+/* Chart row */
+.chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+.chart-box { background: white; border-radius: 12px; padding: 20px;
+             box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+.chart-box h3 { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+.chart-box canvas { width: 100% !important; max-height: 240px; }
+
+/* Section cards */
+.section-card { background: white; border-radius: 12px; padding: 24px;
+                box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; }
+.section-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+
+/* Settings */
+.settings-row { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+.setting-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.setting-item label { color: #666; font-weight: 600; }
+.toggle { position: relative; width: 44px; height: 24px; cursor: pointer; }
+.toggle input { display: none; }
+.toggle .slider { position: absolute; inset: 0; background: #ccc; border-radius: 12px; transition: 0.3s; }
+.toggle .slider::before { content: ''; position: absolute; width: 18px; height: 18px;
+  left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+.toggle input:checked + .slider { background: #667eea; }
+.toggle input:checked + .slider::before { transform: translateX(20px); }
+.setting-input { width: 60px; padding: 4px 8px; border: 2px solid #e0e0e0; border-radius: 6px;
+                 font-size: 14px; text-align: center; }
+
+/* Watchlist */
+.watchlist-table { width: 100%; border-collapse: collapse; }
+.watchlist-table th, .watchlist-table td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+.watchlist-table th { font-size: 13px; color: #888; font-weight: 600; }
+.watchlist-table td { font-size: 14px; }
+.btn-remove { background: none; border: none; color: #dc3545; cursor: pointer; font-size: 13px; font-weight: 600; }
+.btn-remove:hover { text-decoration: underline; }
+.watchlist-add { display: flex; gap: 8px; margin-top: 12px; }
+.watchlist-add input { flex: 1; padding: 8px 12px; border: 2px solid #e0e0e0; border-radius: 8px;
+                       font-size: 14px; outline: none; }
+.watchlist-add input:focus { border-color: #667eea; }
+.btn-add { padding: 8px 20px; background: linear-gradient(135deg, #667eea, #764ba2);
+           color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600;
+           cursor: pointer; }
+.btn-add:hover { opacity: 0.9; }
+.btn-action { padding: 8px 16px; background: #28a745; color: white; border: none; border-radius: 8px;
+              font-size: 13px; font-weight: 600; cursor: pointer; margin-left: 8px; }
+.btn-action:hover { opacity: 0.9; }
+.btn-action.secondary { background: #6c757d; }
+
+/* Predictions table */
+.pred-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.pred-table th, .pred-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #f0f0f0; }
+.pred-table th { font-size: 12px; color: #888; font-weight: 600; text-transform: uppercase; }
+.pred-table tr:hover { background: #f8f9ff; }
+.badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.badge.buy { background: #d4edda; color: #155724; }
+.badge.overweight { background: #d1ecf1; color: #0c5460; }
+.badge.hold { background: #fff3cd; color: #856404; }
+.badge.underweight { background: #f8d7da; color: #721c24; }
+.badge.sell { background: #f5c6cb; color: #721c24; }
+.correct { color: #28a745; font-weight: 700; }
+.incorrect { color: #dc3545; font-weight: 700; }
+.pending-status { color: #888; }
+
+.empty-state { text-align: center; padding: 40px; color: #999; font-size: 15px; }
+
+@media (max-width: 768px) {
+  .summary-row { grid-template-columns: repeat(2, 1fr); }
+  .chart-row { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>TradingAgents 分析平台</h1>
+  <p>AI 多智能体股票分析系统</p>
+  <div class="header-nav">
+    <a href="/static/index.html">分析</a>
+    <a href="/static/backtest.html" class="active">回测</a>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Summary cards -->
+  <div class="summary-row">
+    <div class="summary-card">
+      <div class="label">总预测</div>
+      <div class="value" id="total-count">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">已结算</div>
+      <div class="value" id="resolved-count">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">准确率</div>
+      <div class="value blue" id="accuracy-pct">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">平均 Alpha</div>
+      <div class="value green" id="avg-alpha">-</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="chart-row">
+    <div class="chart-box">
+      <h3>信号准确率</h3>
+      <canvas id="accuracy-chart"></canvas>
+    </div>
+    <div class="chart-box">
+      <h3>准确率趋势（滚动 20 次）</h3>
+      <canvas id="timeline-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div class="section-card">
+    <h3>设置</h3>
+    <div class="settings-row">
+      <div class="setting-item">
+        <label>历史反馈总开关</label>
+        <label class="toggle">
+          <input type="checkbox" id="feedback-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="setting-item">
+        <label>持仓天数</label>
+        <input type="number" class="setting-input" id="holding-days" value="5" min="1" max="30">
+      </div>
+      <div class="setting-item">
+        <label>方向阈值</label>
+        <input type="number" class="setting-input" id="direction-threshold" value="0.02" min="0" max="0.1" step="0.005">
+      </div>
+      <button class="btn-add" onclick="saveConfig()">保存</button>
+    </div>
+  </div>
+
+  <!-- Watchlist -->
+  <div class="section-card">
+    <h3>自选股管理</h3>
+    <table class="watchlist-table">
+      <thead><tr><th>代码</th><th>名称</th><th>添加日期</th><th>状态</th><th></th></tr></thead>
+      <tbody id="watchlist-body"></tbody>
+    </table>
+    <div class="watchlist-add">
+      <input type="text" id="watchlist-input" placeholder="输入股票代码，如 688599.SS">
+      <button class="btn-add" onclick="addWatchlist()">添加</button>
+      <button class="btn-action" onclick="triggerRun()">手动触发分析</button>
+      <button class="btn-action secondary" onclick="triggerResolve()">手动结算</button>
+    </div>
+  </div>
+
+  <!-- Predictions history -->
+  <div class="section-card">
+    <h3>预测历史</h3>
+    <table class="pred-table">
+      <thead><tr>
+        <th>日期</th><th>代码</th><th>名称</th><th>时段</th><th>信号</th>
+        <th>回报</th><th>Alpha</th><th>正确</th>
+      </tr></thead>
+      <tbody id="predictions-body"></tbody>
+    </table>
+  </div>
+
+</div>
+
+<script>
+const API = '/api/backtest';
+
+// ---- Load all data ----
+async function loadAll() {
+  await Promise.all([loadSummary(), loadAccuracy(), loadTimeline(), loadConfig(), loadWatchlist(), loadPredictions()]);
+}
+
+async function loadSummary() {
+  try {
+    const r = await fetch(`${API}/analytics/summary`);
+    const d = await r.json();
+    document.getElementById('total-count').textContent = d.total;
+    document.getElementById('resolved-count').textContent = d.resolved;
+    document.getElementById('accuracy-pct').textContent = d.resolved > 0 ? d.accuracy_pct + '%' : '-';
+    document.getElementById('avg-alpha').textContent = d.resolved > 0 ? (d.avg_alpha_pct >= 0 ? '+' : '') + d.avg_alpha_pct + '%' : '-';
+  } catch(e) { console.error('loadSummary', e); }
+}
+
+// ---- Accuracy chart ----
+let accuracyChart = null;
+async function loadAccuracy() {
+  try {
+    const r = await fetch(`${API}/analytics/accuracy`);
+    const data = await r.json();
+    if (!data.length) return;
+    const labels = data.map(d => d.rating);
+    const values = data.map(d => d.accuracy_pct);
+    const colors = labels.map(l => ({
+      'Buy': '#28a745', 'Overweight': '#20c997', 'Hold': '#ffc107',
+      'Underweight': '#fd7e14', 'Sell': '#dc3545'
+    }[l] || '#6c757d'));
+
+    const ctx = document.getElementById('accuracy-chart').getContext('2d');
+    if (accuracyChart) accuracyChart.destroy();
+    accuracyChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: '准确率 %',
+          data: values,
+          backgroundColor: colors,
+          borderRadius: 6,
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } },
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: ctx => {
+            const item = data[ctx.dataIndex];
+            return `${item.accuracy_pct}% (${item.correct}/${item.total}) avg alpha: ${item.avg_alpha_pct}%`;
+          }}}
+        }
+      }
+    });
+  } catch(e) { console.error('loadAccuracy', e); }
+}
+
+// ---- Timeline chart ----
+let timelineChart = null;
+async function loadTimeline() {
+  try {
+    const r = await fetch(`${API}/analytics/timeline?window=20`);
+    const data = await r.json();
+    if (!data.length) return;
+    const ctx = document.getElementById('timeline-chart').getContext('2d');
+    if (timelineChart) timelineChart.destroy();
+    timelineChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.map(d => d.date),
+        datasets: [{
+          label: '滚动准确率',
+          data: data.map(d => d.accuracy_pct),
+          borderColor: '#667eea',
+          backgroundColor: 'rgba(102,126,234,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 2,
+        }]
+      },
+      options: {
+        responsive: true,
+        scales: {
+          y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } },
+          x: { display: true, ticks: { maxTicksLimit: 10, font: { size: 10 } } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } catch(e) { console.error('loadTimeline', e); }
+}
+
+// ---- Config ----
+async function loadConfig() {
+  try {
+    const r = await fetch(`${API}/config`);
+    const d = await r.json();
+    document.getElementById('feedback-toggle').checked = d.feedback_enabled;
+    document.getElementById('holding-days').value = d.holding_days;
+    document.getElementById('direction-threshold').value = d.direction_threshold;
+  } catch(e) { console.error('loadConfig', e); }
+}
+
+async function saveConfig() {
+  try {
+    await fetch(`${API}/config`, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        feedback_enabled: document.getElementById('feedback-toggle').checked,
+        holding_days: parseInt(document.getElementById('holding-days').value),
+        direction_threshold: parseFloat(document.getElementById('direction-threshold').value),
+      })
+    });
+    alert('设置已保存');
+  } catch(e) { alert('保存失败: ' + e.message); }
+}
+
+// ---- Watchlist ----
+async function loadWatchlist() {
+  try {
+    const r = await fetch(`${API}/watchlist`);
+    const data = await r.json();
+    const tbody = document.getElementById('watchlist-body');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">暂无自选股，请添加</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(w => `
+      <tr>
+        <td><strong>${w.ticker}</strong></td>
+        <td>${w.name || '-'}</td>
+        <td>${w.added_date}</td>
+        <td>${w.active ? '✓ 启用' : '暂停'}</td>
+        <td><button class="btn-remove" onclick="removeWatchlist('${w.ticker}')">移除</button></td>
+      </tr>
+    `).join('');
+  } catch(e) { console.error('loadWatchlist', e); }
+}
+
+async function addWatchlist() {
+  const input = document.getElementById('watchlist-input');
+  const ticker = input.value.trim().toUpperCase();
+  if (!ticker) return;
+  try {
+    const r = await fetch(`${API}/watchlist`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ticker})
+    });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    input.value = '';
+    loadWatchlist();
+  } catch(e) { alert('添加失败: ' + e.message); }
+}
+
+async function removeWatchlist(ticker) {
+  if (!confirm(`确认移除 ${ticker}？`)) return;
+  try {
+    await fetch(`${API}/watchlist/${encodeURIComponent(ticker)}`, {method: 'DELETE'});
+    loadWatchlist();
+  } catch(e) { alert('移除失败: ' + e.message); }
+}
+
+// ---- Manual triggers ----
+async function triggerRun() {
+  if (!confirm('确认手动触发自选股分析？')) return;
+  try {
+    const r = await fetch(`${API}/run`, {method: 'POST'});
+    const d = await r.json();
+    alert(`已启动 ${d.started_count} 个分析任务`);
+  } catch(e) { alert('触发失败: ' + e.message); }
+}
+
+async function triggerResolve() {
+  try {
+    const r = await fetch(`${API}/resolve`, {method: 'POST'});
+    const d = await r.json();
+    alert(`已结算 ${d.resolved_count} 条预测`);
+    loadAll();
+  } catch(e) { alert('结算失败: ' + e.message); }
+}
+
+// ---- Predictions ----
+const SESSION_LABELS = { intraday: '盘中', post_close: '盘后', pre_open: '盘前' };
+const RATING_CLASS = { Buy: 'buy', Overweight: 'overweight', Hold: 'hold', Underweight: 'underweight', Sell: 'sell' };
+
+async function loadPredictions() {
+  try {
+    const r = await fetch(`${API}/predictions?limit=100`);
+    const data = await r.json();
+    const tbody = document.getElementById('predictions-body');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">暂无预测数据</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(p => {
+      const resolved = p.outcome_date != null;
+      const ret = resolved ? (p.raw_return >= 0 ? '+' : '') + (p.raw_return * 100).toFixed(2) + '%' : '';
+      const alpha = resolved ? (p.alpha_return >= 0 ? '+' : '') + (p.alpha_return * 100).toFixed(2) + '%' : '';
+      const correctCell = resolved
+        ? (p.direction_correct ? '<span class="correct">✓</span>' : '<span class="incorrect">✗</span>')
+        : '<span class="pending-status">○</span>';
+      return `<tr>
+        <td>${p.trade_date}</td>
+        <td>${p.ticker}</td>
+        <td>${p.name || '-'}</td>
+        <td>${SESSION_LABELS[p.session] || p.session}</td>
+        <td><span class="badge ${RATING_CLASS[p.rating] || ''}">${p.rating}</span></td>
+        <td>${ret || '<span class="pending-status">待结算</span>'}</td>
+        <td>${alpha}</td>
+        <td>${correctCell}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { console.error('loadPredictions', e); }
+}
+
+// ---- Init ----
+document.addEventListener('DOMContentLoaded', loadAll);
+</script>
+</body>
+</html>
