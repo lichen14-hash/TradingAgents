@@ -72,6 +72,18 @@ class TradingAgentsGraph:
 
         self.memory_log = TradingMemoryLog(self.config)
 
+        self._backtest_store = None
+        db_path = self.config.get("backtest_db_path")
+        if db_path:
+            try:
+                from tradingagents.backtest.db import BacktestDB
+                from tradingagents.backtest.store import BacktestStore
+                _bt_db = BacktestDB(db_path)
+                _bt_db.migrate()
+                self._backtest_store = BacktestStore(_bt_db)
+            except Exception:
+                logger.warning("Backtest store unavailable", exc_info=True)
+
         self.conditional_logic = ConditionalLogic(
             max_debate_rounds=self.config["max_debate_rounds"],
             max_risk_discuss_rounds=self.config["max_risk_discuss_rounds"],
@@ -302,6 +314,10 @@ class TradingAgentsGraph:
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock", data_bundle: DataBundle | None = None):
         """Execute the graph and write the resulting state to disk and memory log."""
         past_context = self.memory_log.get_past_context(company_name)
+        if self.config.get("backtest_feedback_enabled") and self._backtest_store:
+            stats = self._backtest_store.get_ticker_stats(company_name)
+            if stats:
+                past_context += f"\n\n## Backtest Performance Summary\n{stats}"
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -340,6 +356,18 @@ class TradingAgentsGraph:
             trade_date=trade_date,
             final_trade_decision=final_state["final_trade_decision"],
         )
+
+        if self._backtest_store:
+            try:
+                self._backtest_store.record_prediction(
+                    ticker=company_name,
+                    trade_date=trade_date,
+                    rating=self.process_signal(final_state["final_trade_decision"]),
+                    final_state=final_state,
+                    config=self.config,
+                )
+            except Exception:
+                logger.warning("Failed to record prediction to backtest store", exc_info=True)
 
         if self.config.get("checkpoint_enabled"):
             clear_checkpoint(

@@ -180,6 +180,15 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # based on the ticker's exchange suffix. SPY remains the US default
     # so the reflection label keeps reading "Alpha vs SPY" for US tickers
     # while non-US tickers get their regional index automatically.
+    # Backtest / daily accumulation settings
+    "backtest_db_path": os.getenv(
+        "TRADINGAGENTS_BACKTEST_DB",
+        os.path.join(_TRADINGAGENTS_HOME, "backtest.db"),
+    ),
+    "backtest_holding_days": 5,
+    "backtest_direction_threshold": 0.02,
+    "backtest_feedback_enabled": False,
+
     "benchmark_ticker": None,
     "benchmark_map": {
         ".NS":  "^NSEI",       # NSE India (Nifty 50)

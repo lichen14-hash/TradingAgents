@@ -109,6 +109,9 @@ _worker_thread.start()
 app = FastAPI(title="TradingAgents 分析平台")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+from web.backtest_routes import backtest_router
+app.include_router(backtest_router)
+
 
 class AnalyzeRequest(BaseModel):
     ticker: str
