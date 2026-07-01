@@ -24,6 +24,8 @@ def create_trader(llm):
         company_name = state["company_of_interest"]
         instrument_context = get_instrument_context_from_state(state)
         investment_plan = state["investment_plan"]
+        portfolio_ctx = state.get("user_portfolio_context", "")
+        portfolio_section = f"\n\n**用户持仓状态:**\n{portfolio_ctx}" if portfolio_ctx else ""
 
         messages = [
             {
@@ -44,6 +46,7 @@ def create_trader(llm):
                     f"social media sentiment. Use this plan as a foundation for evaluating your next "
                     f"trading decision.\n\nProposed Investment Plan: {investment_plan}\n\n"
                     f"Leverage these insights to make an informed and strategic decision."
+                    f"{portfolio_section}"
                 ),
             },
         ]

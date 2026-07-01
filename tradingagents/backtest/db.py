@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = "1"
+_SCHEMA_VERSION = "3"
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS predictions (
@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS predictions (
     actual_days        INTEGER,
     direction_correct  INTEGER,
     reflection         TEXT,
+    cost_price         REAL,
+    shares             REAL,
+    position_pct       REAL,
     UNIQUE(ticker, trade_date, session)
 );
 
@@ -103,6 +106,18 @@ class BacktestDB:
     def migrate(self) -> None:
         conn = self.get_connection()
         conn.executescript(_DDL)
+
+        # v2: add position columns to existing predictions table
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(predictions)").fetchall()}
+        for col in ("cost_price REAL", "shares REAL", "position_pct REAL"):
+            col_name = col.split()[0]
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE predictions ADD COLUMN {col}")
+
+        # v3: add source column to distinguish web vs skill predictions
+        if "source" not in existing:
+            conn.execute("ALTER TABLE predictions ADD COLUMN source TEXT DEFAULT 'web'")
+
         conn.execute(
             "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
             (_SCHEMA_VERSION,),

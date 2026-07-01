@@ -314,8 +314,8 @@ def get_news(
             break
 
     lines = [f"## Recent news for {ticker} (Hong Kong)\n"]
-    limit = 15
-    for _, row in df.head(limit).iterrows():
+    news_limit = 15
+    for _, row in df.head(news_limit).iterrows():
         date_str = str(row[date_col]) if date_col else ""
         title = str(row[title_col]) if title_col else ""
         snippet = ""
@@ -325,7 +325,244 @@ def get_news(
         if snippet:
             lines.append(f"  {snippet}")
 
+    # Append analyst forecasts (silent fail — news body unaffected)
+    try:
+        forecast_lines = _fetch_hk_analyst_forecasts(code)
+        if forecast_lines:
+            lines.append("\n## 分析师预测\n")
+            lines.extend(forecast_lines)
+    except Exception as e:
+        logger.warning("Analyst forecasts failed for %s: %s", code, e)
+
     return "\n".join(lines)
+
+
+def _fetch_futu_news(limit: int) -> list[str]:
+    """富途新闻 — 港股/跨境财经资讯。"""
+    try:
+        import akshare as ak
+    except ImportError:
+        return []
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.stock_info_global_futu)
+        if df is None or df.empty:
+            return lines
+        title_col = next((c for c in ("标题", "title") if c in df.columns), df.columns[0])
+        content_col = next((c for c in ("内容", "content") if c in df.columns), None)
+        time_col = next((c for c in ("发布时间", "publish_time") if c in df.columns), None)
+        for _, row in df.head(limit).iterrows():
+            title = str(row[title_col]).strip()
+            time_str = f" [{row[time_col]}]" if time_col else ""
+            lines.append(f"- {title}{time_str}")
+            if content_col:
+                snippet = str(row[content_col]).strip()[:200]
+                if snippet and snippet != title:
+                    lines.append(f"  {snippet}")
+    except Exception as e:
+        logger.warning("stock_info_global_futu failed: %s", e)
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Financial Statements
+# ---------------------------------------------------------------------------
+
+_HK_STATEMENT_MAP = {
+    "balance_sheet": "资产负债表",
+    "cashflow": "现金流量表",
+    "income": "利润表",
+}
+
+
+def _fetch_hk_financial(code: str, statement_type: str, freq: str) -> pd.DataFrame | None:
+    ak = _get_ak()
+    symbol = _HK_STATEMENT_MAP.get(statement_type, statement_type)
+    indicator = "年度" if freq == "annual" else "报告期"
+    try:
+        df = call_with_retry(
+            ak.stock_financial_hk_report_em,
+            stock=code, symbol=symbol, indicator=indicator,
+        )
+        if df is not None and not df.empty:
+            return df
+    except Exception as e:
+        logger.warning("stock_financial_hk_report_em(%s, %s) failed for %s: %s",
+                       symbol, indicator, code, e)
+    return None
+
+
+def _format_hk_financial(
+    df: pd.DataFrame | None, ticker: str, title: str, freq: str, curr_date: str | None,
+) -> str:
+    if df is None or df.empty:
+        return f"No {title} data available for {ticker} from AKShare."
+
+    date_col = None
+    for c in ("REPORT_DATE", "REPORTDATE", "报告日期"):
+        if c in df.columns:
+            date_col = c
+            break
+
+    if date_col:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        if curr_date:
+            df = df[df[date_col] <= pd.to_datetime(curr_date)]
+
+    item_col = None
+    for c in ("STD_ITEM_NAME", "ITEM_NAME", "项目"):
+        if c in df.columns:
+            item_col = c
+            break
+
+    amount_col = None
+    for c in ("AMOUNT", "金额", "VALUE"):
+        if c in df.columns:
+            amount_col = c
+            break
+
+    if item_col and amount_col and date_col:
+        dates = sorted(df[date_col].dropna().unique(), reverse=True)[:4]
+        df_filtered = df[df[date_col].isin(dates)]
+        try:
+            pivot = df_filtered.pivot_table(
+                index=item_col, columns=date_col, values=amount_col, aggfunc="first",
+            )
+            pivot.columns = [c.strftime("%Y-%m-%d") if hasattr(c, "strftime") else str(c) for c in pivot.columns]
+            pivot = pivot.dropna(how="all")
+            if len(pivot) > 30:
+                pivot = pivot.head(30)
+            body = pivot.to_string()
+        except Exception:
+            df = df.head(4)
+            body = df.to_string(max_rows=20, max_cols=15)
+    else:
+        df = df.head(4)
+        body = df.to_string(max_rows=20, max_cols=15)
+
+    header = f"# {title} for {ticker.upper()} (Hong Kong)\n"
+    header += f"# Frequency: {freq}\n"
+    header += "# Data source: AKShare (EastMoney)\n"
+    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    return header + body
+
+
+def get_balance_sheet(
+    ticker: str,
+    freq: str = "quarterly",
+    curr_date: str = None,
+) -> str:
+    code = hk_to_akshare_symbol(ticker)
+    df = _fetch_hk_financial(code, "balance_sheet", freq)
+    return _format_hk_financial(df, ticker, "Balance Sheet", freq, curr_date)
+
+
+def get_cashflow(
+    ticker: str,
+    freq: str = "quarterly",
+    curr_date: str = None,
+) -> str:
+    code = hk_to_akshare_symbol(ticker)
+    df = _fetch_hk_financial(code, "cashflow", freq)
+    return _format_hk_financial(df, ticker, "Cash Flow", freq, curr_date)
+
+
+def get_income_statement(
+    ticker: str,
+    freq: str = "quarterly",
+    curr_date: str = None,
+) -> str:
+    code = hk_to_akshare_symbol(ticker)
+    df = _fetch_hk_financial(code, "income", freq)
+    return _format_hk_financial(df, ticker, "Income Statement", freq, curr_date)
+
+
+# ---------------------------------------------------------------------------
+# Analyst Forecasts
+# ---------------------------------------------------------------------------
+
+def _fetch_hk_analyst_forecasts(code: str) -> list[str]:
+    ak = _get_ak()
+    lines: list[str] = []
+
+    # Rating summary
+    try:
+        df = call_with_retry(
+            ak.stock_hk_profit_forecast_et, symbol=code, indicator="评级总览",
+        )
+        if df is not None and not df.empty:
+            row = df.iloc[0]
+            cols = list(df.columns)
+            rating = str(row[cols[0]]) if len(cols) > 0 else ""
+            score = str(row[cols[1]]) if len(cols) > 1 else ""
+            count = str(row[cols[2]]) if len(cols) > 2 else ""
+            lines.append(f"- 综合评级: {rating} (评分 {score}, {count} 家机构)")
+    except Exception as e:
+        logger.warning("stock_hk_profit_forecast_et(评级总览) failed for %s: %s", code, e)
+
+    # Individual forecasts
+    try:
+        df = call_with_retry(
+            ak.stock_hk_profit_forecast_et, symbol=code, indicator="盈利预测概览",
+        )
+        if df is not None and not df.empty:
+            for _, row in df.head(10).iterrows():
+                cols = list(df.columns)
+                parts = []
+                for c in cols:
+                    val = row.get(c)
+                    if pd.notna(val) and str(val).strip():
+                        parts.append(f"{c}: {val}")
+                if parts:
+                    lines.append(f"- {', '.join(parts)}")
+    except Exception as e:
+        logger.warning("stock_hk_profit_forecast_et(盈利预测概览) failed for %s: %s", code, e)
+
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Industry Classification
+# ---------------------------------------------------------------------------
+
+def get_hk_industry_info(ticker: str) -> str:
+    code = hk_to_akshare_symbol(ticker)
+
+    # Primary: efinance
+    try:
+        import efinance as ef
+        info = ef.stock.get_base_info(code)
+        if info is not None:
+            industry = None
+            if isinstance(info, pd.Series):
+                for key in ("所处行业", "行业"):
+                    if key in info.index and pd.notna(info[key]):
+                        industry = str(info[key])
+                        break
+            elif isinstance(info, pd.DataFrame) and not info.empty:
+                for key in ("所处行业", "行业"):
+                    if key in info.columns:
+                        industry = str(info.iloc[0][key])
+                        break
+            if industry:
+                return f"## 港股个股行业分类\n- 股票: {ticker}\n- 所处行业: {industry}"
+    except Exception as e:
+        logger.warning("efinance.get_base_info failed for %s: %s", code, e)
+
+    # Fallback: akshare company profile
+    try:
+        ak = _get_ak()
+        df = call_with_retry(ak.stock_hk_company_profile_em, symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                key = str(row.iloc[0]).strip() if len(row) > 0 else ""
+                val = str(row.iloc[1]).strip() if len(row) > 1 else ""
+                if "行业" in key and val:
+                    return f"## 港股个股行业分类\n- 股票: {ticker}\n- {key}: {val}"
+    except Exception as e:
+        logger.warning("stock_hk_company_profile_em fallback failed for %s: %s", code, e)
+
+    return f"No industry classification available for {ticker}."
 
 
 def get_global_news(
@@ -333,6 +570,18 @@ def get_global_news(
     look_back_days: int = 7,
     limit: int = 10,
 ) -> str:
-    """Get global financial news relevant to HK market (reuses CCTV news)."""
+    """Get global financial news for HK market.
+
+    Uses A-share sources (EastMoney + Caixin + economic calendar) plus
+    Futu news for HK/cross-border coverage.
+    """
     from .akshare_provider import get_global_news as _ak_global_news
-    return _ak_global_news(curr_date, look_back_days, limit)
+
+    sections: list[str] = [_ak_global_news(curr_date, look_back_days, limit)]
+
+    futu_lines = _fetch_futu_news(limit)
+    if futu_lines:
+        sections.append("\n## 富途 · 港股/跨境资讯\n")
+        sections.extend(futu_lines)
+
+    return "\n".join(sections)

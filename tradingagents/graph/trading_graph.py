@@ -365,6 +365,7 @@ class TradingAgentsGraph:
                     rating=self.process_signal(final_state["final_trade_decision"]),
                     final_state=final_state,
                     config=self.config,
+                    source="web",
                 )
             except Exception:
                 logger.warning("Failed to record prediction to backtest store", exc_info=True)

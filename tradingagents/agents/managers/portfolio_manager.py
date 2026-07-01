@@ -39,6 +39,13 @@ def create_portfolio_manager(llm):
             else ""
         )
 
+        portfolio_ctx = state.get("user_portfolio_context", "")
+        portfolio_section = (
+            f"**用户持仓状态:**\n{portfolio_ctx}\n"
+            if portfolio_ctx
+            else ""
+        )
+
         prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 {instrument_context}
@@ -55,7 +62,7 @@ def create_portfolio_manager(llm):
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
-{lessons_line}
+{lessons_line}{portfolio_section}
 **Risk Analysts Debate History:**
 {history}
 

@@ -123,6 +123,36 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .history-batch-header { font-size: 13px; color: #888; font-weight: 600; padding: 4px 0 8px; }
 .history-batch-group .history-item { padding: 8px 0; }
 .history-batch-group .history-item:first-child { padding-top: 0; }
+
+/* Position input */
+.position-toggle { font-size: 13px; color: #667eea; cursor: pointer; user-select: none;
+                   margin-top: 12px; font-weight: 600; }
+.position-toggle:hover { text-decoration: underline; }
+.position-row { display: none; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.position-row.open { display: flex; }
+.position-row .input-group { min-width: 120px; }
+.position-row .input-group input { width: 100%; padding: 8px 12px; border: 2px solid #e0e0e0;
+                                    border-radius: 8px; font-size: 14px; outline: none; }
+.position-row .input-group input:focus { border-color: #667eea; }
+
+/* Batch position table */
+.batch-position-card { background: white; border-radius: 12px; padding: 28px;
+                       box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; display: none; }
+.batch-position-card.active { display: block; }
+.batch-position-title { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+.batch-position-table { width: 100%; border-collapse: collapse; }
+.batch-position-table th { text-align: left; padding: 8px 6px; font-size: 13px; color: #666;
+                           border-bottom: 2px solid #eee; font-weight: 600; }
+.batch-position-table td { padding: 8px 6px; border-bottom: 1px solid #f0f0f0; }
+.batch-position-table td:first-child { font-weight: 600; font-size: 14px; }
+.batch-position-table input { width: 100%; padding: 6px 10px; border: 2px solid #e0e0e0;
+                               border-radius: 6px; font-size: 13px; outline: none; }
+.batch-position-table input:focus { border-color: #667eea; }
+.btn-batch-submit { margin-top: 16px; padding: 10px 28px; background: linear-gradient(135deg, #667eea, #764ba2);
+                    color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
+                    cursor: pointer; transition: opacity 0.2s; }
+.btn-batch-submit:hover { opacity: 0.9; }
+.btn-batch-submit:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -150,6 +180,31 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       </div>
       <button class="btn-analyze" id="btnAnalyze" onclick="startAnalysis()">开始分析</button>
     </div>
+    <div class="position-toggle" id="positionToggle" onclick="togglePosition()">▸ 持仓信息（选填）</div>
+    <div class="position-row" id="positionRow">
+      <div class="input-group">
+        <label>成本价</label>
+        <input type="number" id="costPrice" step="0.01" min="0" placeholder="如 15.80">
+      </div>
+      <div class="input-group">
+        <label>持仓数量</label>
+        <input type="number" id="shares" step="1" min="0" placeholder="如 1000">
+      </div>
+      <div class="input-group">
+        <label>仓位占比 (%)</label>
+        <input type="number" id="positionPct" step="0.1" min="0" max="100" placeholder="如 20">
+      </div>
+    </div>
+  </div>
+
+  <!-- Batch position input -->
+  <div class="batch-position-card" id="batchPositionCard">
+    <div class="batch-position-title">持仓信息录入（选填，不填表示未持有）</div>
+    <table class="batch-position-table">
+      <thead><tr><th>股票代码</th><th>成本价</th><th>持仓数量</th><th>仓位占比 (%)</th></tr></thead>
+      <tbody id="batchPositionBody"></tbody>
+    </table>
+    <button class="btn-batch-submit" id="btnBatchSubmit" onclick="submitBatchWithPositions()">开始批量分析</button>
   </div>
 
   <!-- Batch Progress -->
@@ -228,7 +283,28 @@ let currentBatchId = null;
 let eventSource = null;
 let batchPollTimer = null;
 
-// ========== Single-task analysis (unchanged flow) ==========
+// ========== Position helpers ==========
+
+function togglePosition() {
+  const row = document.getElementById('positionRow');
+  const toggle = document.getElementById('positionToggle');
+  const isOpen = row.classList.toggle('open');
+  toggle.textContent = (isOpen ? '▾' : '▸') + ' 持仓信息（选填）';
+}
+
+function getPositionInfo() {
+  const cp = document.getElementById('costPrice').value;
+  const sh = document.getElementById('shares').value;
+  const pp = document.getElementById('positionPct').value;
+  if (!cp && !sh && !pp) return null;
+  return {
+    cost_price: cp ? parseFloat(cp) : null,
+    shares: sh ? parseFloat(sh) : null,
+    position_pct: pp ? parseFloat(pp) : null,
+  };
+}
+
+// ========== Single-task analysis ==========
 
 async function startAnalysis() {
   const raw = document.getElementById('ticker').value.trim();
@@ -238,12 +314,13 @@ async function startAnalysis() {
   const tickers = raw.split(/[,，\s]+/).filter(Boolean);
 
   if (tickers.length > 1) {
-    startBatchAnalysis(tickers, date);
+    showBatchPositionTable(tickers);
     return;
   }
 
   // Single ticker flow
   const ticker = tickers[0];
+  const position = getPositionInfo();
   const btn = document.getElementById('btnAnalyze');
   btn.disabled = true;
   btn.textContent = '分析中...';
@@ -252,6 +329,7 @@ async function startAnalysis() {
   const progressCard = document.getElementById('progressCard');
   progressCard.classList.add('active');
   document.getElementById('batchCard').classList.remove('active');
+  document.getElementById('batchPositionCard').classList.remove('active');
   document.getElementById('resultCard').classList.remove('active');
   document.querySelectorAll('.steps li').forEach(li => { li.className = ''; });
 
@@ -259,11 +337,14 @@ async function startAnalysis() {
   const isEtf = /^(510|511|512|513|515|516|517|518|560|561|562|563|588|589|159)\d{3}$/.test(code);
   document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
 
+  const body = { ticker, date };
+  if (position) body.position = position;
+
   try {
     const resp = await fetch('/api/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker, date }),
+      body: JSON.stringify(body),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -392,38 +473,80 @@ function showResult(taskId, signal) {
 
 // ========== Batch analysis ==========
 
-async function startBatchAnalysis(tickers, date) {
-  const btn = document.getElementById('btnAnalyze');
-  btn.disabled = true;
-  btn.textContent = '分析中...';
-
+function showBatchPositionTable(tickers) {
+  const card = document.getElementById('batchPositionCard');
+  card.classList.add('active');
   document.getElementById('progressCard').classList.remove('active');
   document.getElementById('resultCard').classList.remove('active');
+
+  const tbody = document.getElementById('batchPositionBody');
+  tbody.innerHTML = tickers.map((t, i) => `
+    <tr data-ticker="${esc(t)}">
+      <td>${esc(t)}</td>
+      <td><input type="number" step="0.01" min="0" placeholder="未持有" id="bp-cost-${i}"></td>
+      <td><input type="number" step="1" min="0" placeholder="未持有" id="bp-shares-${i}"></td>
+      <td><input type="number" step="0.1" min="0" max="100" placeholder="未持有" id="bp-pct-${i}"></td>
+    </tr>
+  `).join('');
+
+  card._tickers = tickers;
+}
+
+async function submitBatchWithPositions() {
+  const card = document.getElementById('batchPositionCard');
+  const tickers = card._tickers;
+  const date = document.getElementById('date').value;
+
+  const items = tickers.map((t, i) => {
+    const cp = document.getElementById(`bp-cost-${i}`).value;
+    const sh = document.getElementById(`bp-shares-${i}`).value;
+    const pp = document.getElementById(`bp-pct-${i}`).value;
+    const item = { ticker: t };
+    if (cp || sh || pp) {
+      item.position = {
+        cost_price: cp ? parseFloat(cp) : null,
+        shares: sh ? parseFloat(sh) : null,
+        position_pct: pp ? parseFloat(pp) : null,
+      };
+    }
+    return item;
+  });
+
+  const btn = document.getElementById('btnBatchSubmit');
+  btn.disabled = true;
+  btn.textContent = '提交中...';
+  document.getElementById('btnAnalyze').disabled = true;
+  document.getElementById('btnAnalyze').textContent = '分析中...';
 
   try {
     const resp = await fetch('/api/analyze/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tickers, date }),
+      body: JSON.stringify({ items, date }),
     });
     if (!resp.ok) {
       const err = await resp.json();
       const msg = err.detail || '提交失败';
       alert(msg);
       btn.disabled = false;
-      btn.textContent = '开始分析';
+      btn.textContent = '开始批量分析';
+      document.getElementById('btnAnalyze').disabled = false;
+      document.getElementById('btnAnalyze').textContent = '开始分析';
       return;
     }
     const data = await resp.json();
     currentBatchId = data.batch_id;
     currentTaskId = null;
 
+    card.classList.remove('active');
     showBatchCard(data.tasks);
     startBatchPolling(data.batch_id);
   } catch (e) {
     alert('请求失败: ' + e.message);
     btn.disabled = false;
-    btn.textContent = '开始分析';
+    btn.textContent = '开始批量分析';
+    document.getElementById('btnAnalyze').disabled = false;
+    document.getElementById('btnAnalyze').textContent = '开始分析';
   }
 }
 
@@ -446,10 +569,41 @@ function showBatchCard(taskList) {
   `).join('');
 }
 
-let batchEventSource = null;
+let batchEventSources = {};
 
 function startBatchPolling(batchId) {
   if (batchPollTimer) clearInterval(batchPollTimer);
+
+  function _connectSSE(taskId) {
+    if (batchEventSources[taskId]) return;
+    const es = new EventSource(`/api/progress/${taskId}`);
+    batchEventSources[taskId] = es;
+    es.onmessage = function(e) {
+      const event = JSON.parse(e.data);
+      const el = document.getElementById('batch-' + taskId);
+      if (el) {
+        const stageDiv = el.querySelector('.batch-item-stage');
+        if (stageDiv && event.stage !== 'init') {
+          stageDiv.textContent = event.message;
+        }
+        if (event.stage !== 'done' && event.stage !== 'error' && event.stage !== 'cancelled') {
+          el.className = 'batch-item active';
+        }
+      }
+      if (event.stage === 'done' || event.stage === 'error' || event.stage === 'cancelled') {
+        es.close();
+        delete batchEventSources[taskId];
+        poll();
+      }
+    };
+  }
+
+  function _closeAllSSE() {
+    for (const [id, es] of Object.entries(batchEventSources)) {
+      es.close();
+    }
+    batchEventSources = {};
+  }
 
   async function poll() {
     try {
@@ -458,36 +612,17 @@ function startBatchPolling(batchId) {
       const data = await resp.json();
       updateBatchUI(data);
 
-      // Connect SSE to the currently active task for fine-grained updates
-      const activeTask = data.tasks.find(t =>
-        t.status !== 'done' && t.status !== 'failed' && t.status !== 'pending'
-      );
-      if (activeTask && (!batchEventSource || batchEventSource._taskId !== activeTask.task_id)) {
-        if (batchEventSource) batchEventSource.close();
-        batchEventSource = new EventSource(`/api/progress/${activeTask.task_id}`);
-        batchEventSource._taskId = activeTask.task_id;
-        batchEventSource.onmessage = function(e) {
-          const event = JSON.parse(e.data);
-          if (event.stage === 'done' || event.stage === 'error') {
-            batchEventSource.close();
-            batchEventSource = null;
-            poll();
-            return;
-          }
-          const el = document.getElementById('batch-' + activeTask.task_id);
-          if (el) {
-            const stageDiv = el.querySelector('.batch-item-stage');
-            if (stageDiv && event.stage !== 'init') {
-              stageDiv.textContent = event.message;
-            }
-          }
-        };
+      // Connect SSE to ALL active tasks for real-time updates
+      for (const t of data.tasks) {
+        if (t.status !== 'done' && t.status !== 'failed' && t.status !== 'pending' && t.status !== 'cancelled') {
+          _connectSSE(t.task_id);
+        }
       }
 
       if (data.done >= data.total) {
         clearInterval(batchPollTimer);
         batchPollTimer = null;
-        if (batchEventSource) { batchEventSource.close(); batchEventSource = null; }
+        _closeAllSSE();
         document.getElementById('btnAnalyze').disabled = false;
         document.getElementById('btnAnalyze').textContent = '开始分析';
         loadHistory();
@@ -498,7 +633,7 @@ function startBatchPolling(batchId) {
   }
 
   poll();
-  batchPollTimer = setInterval(poll, 3000);
+  batchPollTimer = setInterval(poll, 2000);
 }
 
 function updateBatchUI(data) {
