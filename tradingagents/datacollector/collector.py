@@ -144,8 +144,18 @@ class DataCollector:
         )
 
         market = self._collect_market_data(ticker, trade_date, ohlcv_df=ohlcv_df) if "market" in selected else None
-        sentiment = self._collect_sentiment_data(ticker, trade_date) if "social" in selected else None
-        news = self._collect_news_data(ticker, trade_date) if "news" in selected else None
+
+        # Fetch ticker news once and share between sentiment and news analysts
+        shared_ticker_news: str | None = None
+        if "social" in selected or "news" in selected:
+            start_date = _lookback_date(trade_date, 7)
+            shared_ticker_news = _safe_call(
+                "shared:ticker_news",
+                route_to_vendor, "get_news", ticker, start_date, trade_date,
+            )
+
+        sentiment = self._collect_sentiment_data(ticker, trade_date, shared_ticker_news) if "social" in selected else None
+        news = self._collect_news_data(ticker, trade_date, shared_ticker_news) if "news" in selected else None
         fundamentals = self._collect_fundamentals_data(ticker, trade_date) if "fundamentals" in selected else None
 
         bundle = DataBundle(
@@ -232,13 +242,13 @@ class DataCollector:
             verified_snapshot=verified_snapshot,
         )
 
-    def _collect_sentiment_data(self, ticker: str, trade_date: str) -> SentimentData:
-        start_date = _lookback_date(trade_date, 7)
-
-        ticker_news = _safe_call(
-            "sentiment:news",
-            route_to_vendor, "get_news", ticker, start_date, trade_date,
-        )
+    def _collect_sentiment_data(self, ticker: str, trade_date: str, ticker_news: str | None = None) -> SentimentData:
+        if ticker_news is None:
+            start_date = _lookback_date(trade_date, 7)
+            ticker_news = _safe_call(
+                "sentiment:news",
+                route_to_vendor, "get_news", ticker, start_date, trade_date,
+            )
 
         if is_a_share(ticker) or is_hk_stock(ticker):
             from tradingagents.dataflows.eastmoney import (
@@ -269,15 +279,15 @@ class DataCollector:
             reddit=reddit,
         )
 
-    def _collect_news_data(self, ticker: str, trade_date: str) -> NewsData:
-        start_date = _lookback_date(trade_date, 7)
+    def _collect_news_data(self, ticker: str, trade_date: str, ticker_news: str | None = None) -> NewsData:
+        if ticker_news is None:
+            start_date = _lookback_date(trade_date, 7)
+            ticker_news = _safe_call(
+                "news:ticker",
+                route_to_vendor, "get_news", ticker, start_date, trade_date,
+            )
         lookback = self.config.get("global_news_lookback_days", 7)
         limit = self.config.get("global_news_article_limit", 10)
-
-        ticker_news = _safe_call(
-            "news:ticker",
-            route_to_vendor, "get_news", ticker, start_date, trade_date,
-        )
 
         if is_a_share(ticker):
             from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
@@ -354,12 +364,32 @@ class DataCollector:
                     route_to_vendor, "get_prediction_markets", query, None,
                 )
 
+        # Industry rotation + stock money flow
+        industry_data = ""
+        stock_moneyflow = ""
+        if is_a_share(ticker):
+            from tradingagents.dataflows.tushare_provider import get_moneyflow as _ts_moneyflow
+            stock_moneyflow = _safe_call(
+                "news:moneyflow", _ts_moneyflow, ticker, trade_date, 5,
+            )
+            from tradingagents.dataflows.akshare_provider import get_industry_data as _ak_industry
+            industry_data = _safe_call(
+                "news:industry", _ak_industry, ticker, trade_date,
+            )
+        elif is_hk_stock(ticker):
+            from tradingagents.dataflows.hk_akshare_provider import get_hk_industry_info
+            industry_data = _safe_call(
+                "news:hk_industry", get_hk_industry_info, ticker,
+            )
+
         return NewsData(
             ticker_news=ticker_news,
             global_news=global_news,
             insider_transactions=insider,
             macro_indicators=macro,
             prediction_markets=predictions,
+            industry_data=industry_data,
+            stock_moneyflow=stock_moneyflow,
         )
 
     def _collect_fundamentals_data(self, ticker: str, trade_date: str) -> FundamentalsData:
@@ -416,6 +446,67 @@ class DataCollector:
         safe_ticker = safe_ticker_component(ticker)
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         return f"{safe_ticker}_{trade_date}_{ts}.json"
+
+
+class DataIncompleteError(Exception):
+    """Raised when collected data has unavailable fields."""
+
+    def __init__(self, issues: list[dict]):
+        self.issues = issues
+        summary = "; ".join(f"{i['category']}/{i['field']}" for i in issues[:5])
+        if len(issues) > 5:
+            summary += f" ... 等共 {len(issues)} 项"
+        super().__init__(f"数据不完备，共 {len(issues)} 项不可用: {summary}")
+
+
+def validate_bundle_completeness(bundle: DataBundle) -> list[dict]:
+    """Check all fields in bundle for <unavailable: markers.
+
+    Returns list of issues. Each issue is a dict with keys:
+        category, field, reason.
+    """
+    issues: list[dict] = []
+
+    def _check(category: str, field: str, value: str):
+        if value and value.startswith(_UNAVAILABLE_PREFIX):
+            reason = value[len(_UNAVAILABLE_PREFIX):-1] if value.endswith(">") else value
+            issues.append({"category": category, "field": field, "reason": reason})
+
+    def _check_dict(category: str, d: dict[str, str]):
+        for k, v in d.items():
+            if v and (v.startswith(_UNAVAILABLE_PREFIX) or "data unavailable" in v.lower()):
+                reason = v[len(_UNAVAILABLE_PREFIX):-1] if v.startswith(_UNAVAILABLE_PREFIX) and v.endswith(">") else v[:100]
+                issues.append({"category": category, "field": k, "reason": reason})
+
+    if bundle.market:
+        _check("行情数据", "stock_data", bundle.market.stock_data)
+        _check("行情数据", "verified_snapshot", bundle.market.verified_snapshot)
+        _check_dict("行情数据/技术指标", bundle.market.indicators)
+
+    if bundle.sentiment:
+        _check("情绪数据", "ticker_news", bundle.sentiment.ticker_news)
+        _check("情绪数据", "stocktwits", bundle.sentiment.stocktwits)
+        _check("情绪数据", "reddit", bundle.sentiment.reddit)
+
+    if bundle.news:
+        _check("新闻数据", "ticker_news", bundle.news.ticker_news)
+        _check("新闻数据", "global_news", bundle.news.global_news)
+        _check("新闻数据", "insider_transactions", bundle.news.insider_transactions)
+        _check("新闻数据", "industry_data", bundle.news.industry_data)
+        _check("新闻数据", "stock_moneyflow", bundle.news.stock_moneyflow)
+        _check_dict("宏观指标", bundle.news.macro_indicators)
+        _check_dict("市场信号", bundle.news.prediction_markets)
+
+    if bundle.fundamentals:
+        _check("财务数据", "overview", bundle.fundamentals.overview)
+        _check("财务数据", "balance_sheet_quarterly", bundle.fundamentals.balance_sheet_quarterly)
+        _check("财务数据", "balance_sheet_annual", bundle.fundamentals.balance_sheet_annual)
+        _check("财务数据", "cashflow_quarterly", bundle.fundamentals.cashflow_quarterly)
+        _check("财务数据", "cashflow_annual", bundle.fundamentals.cashflow_annual)
+        _check("财务数据", "income_quarterly", bundle.fundamentals.income_quarterly)
+        _check("财务数据", "income_annual", bundle.fundamentals.income_annual)
+
+    return issues
 
 
 def _lookback_date(trade_date: str, days: int) -> str:

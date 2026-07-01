@@ -1,6 +1,6 @@
 """Data collection module — pre-fetches all data for TradingAgents analysis."""
 
-from .collector import DataCollector
+from .collector import DataCollector, DataIncompleteError, validate_bundle_completeness
 from .constants import (
     ALL_INDICATORS,
     BUNDLE_VERSION,
@@ -18,6 +18,8 @@ from .schema import (
 
 __all__ = [
     "DataCollector",
+    "DataIncompleteError",
+    "validate_bundle_completeness",
     "DataBundle",
     "BundleMetadata",
     "MarketData",

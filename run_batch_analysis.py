@@ -210,7 +210,7 @@ def _build_completeness_banner(issues: list[dict]) -> str:
 """
 
 
-def generate_html_report(ticker: str, name: str, final_state: dict, bundle: DataBundle) -> Path:
+def generate_html_report(ticker: str, name: str, final_state: dict, bundle: DataBundle, output_dir: Path | None = None) -> Path:
     from test_output.run_baba_analysis import (
         build_analysis_sections,
         build_data_tables,
@@ -345,7 +345,9 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 </html>"""
 
     safe_name = ticker.replace(".", "_")
-    output_path = OUTPUT_DIR / f"{safe_name}_report.html"
+    _out_dir = output_dir if output_dir is not None else OUTPUT_DIR
+    _out_dir.mkdir(exist_ok=True)
+    output_path = _out_dir / f"{safe_name}_report.html"
     output_path.write_text(html, encoding="utf-8")
     logger.info("HTML report saved to %s", output_path)
     return output_path

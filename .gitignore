@@ -217,6 +217,10 @@ __marimo__/
 
 # Cache
 **/data_cache/
+skill_output/
+
+# Test output
+test_output/
 
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise

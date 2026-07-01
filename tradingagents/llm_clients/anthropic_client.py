@@ -36,11 +36,21 @@ _PROXY_RATE_LIMIT_PATTERNS = ("MPE-429", "Too many tokens per day", "too many to
 
 _RETRY_WAIT_SECONDS = 180  # 3 minutes
 
+_TRANSIENT_PATTERNS = ("502", "503", "504", "MPE-001", "Server Error", "overloaded")
+_TRANSIENT_MAX_RETRIES = 3
+_TRANSIENT_BASE_DELAY = 30  # seconds
+
 
 def _is_proxy_rate_limit(exc: Exception) -> bool:
     """Detect rate-limit errors disguised as HTTP 400 by API proxies."""
     msg = str(exc)
     return any(p in msg for p in _PROXY_RATE_LIMIT_PATTERNS)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Detect gateway/server errors worth retrying (502, 503, 504, overloaded)."""
+    msg = str(exc)
+    return any(p in msg for p in _TRANSIENT_PATTERNS)
 
 
 class NormalizedChatAnthropic(ChatAnthropic):
@@ -56,17 +66,28 @@ class NormalizedChatAnthropic(ChatAnthropic):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        try:
-            return normalize_content(super().invoke(input, config, **kwargs))
-        except Exception as exc:
-            if not _is_proxy_rate_limit(exc):
+        for attempt in range(_TRANSIENT_MAX_RETRIES + 1):
+            try:
+                return normalize_content(super().invoke(input, config, **kwargs))
+            except Exception as exc:
+                if _is_proxy_rate_limit(exc):
+                    logger.warning(
+                        "Proxy rate limit detected, retrying in %ds: %s",
+                        _RETRY_WAIT_SECONDS, exc,
+                    )
+                    time.sleep(_RETRY_WAIT_SECONDS)
+                    return normalize_content(super().invoke(input, config, **kwargs))
+
+                if _is_transient_error(exc) and attempt < _TRANSIENT_MAX_RETRIES:
+                    delay = _TRANSIENT_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Transient LLM error (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1, _TRANSIENT_MAX_RETRIES, delay, exc,
+                    )
+                    time.sleep(delay)
+                    continue
+
                 raise
-            logger.warning(
-                "Proxy rate limit detected, retrying in %ds: %s",
-                _RETRY_WAIT_SECONDS, exc,
-            )
-            time.sleep(_RETRY_WAIT_SECONDS)
-            return normalize_content(super().invoke(input, config, **kwargs))
 
 
 class AnthropicClient(BaseLLMClient):

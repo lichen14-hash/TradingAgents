@@ -125,7 +125,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "stock market crash", "geopolitical conflict",
     ],
     "cn_macro_indicators": [
-        "lpr_1y", "lpr_5y", "mlf_rate", "shibor_overnight", "rrr",
+        "lpr_1y", "lpr_5y", "shibor_overnight", "rrr",
         "cn_cpi", "cn_ppi", "cn_pmi_mfg", "cn_pmi_non_mfg",
         "cn_m2", "cn_m1", "social_financing", "new_yuan_loans",
         "cn_gdp", "cn_industrial_production", "cn_fixed_asset_investment",
@@ -143,8 +143,8 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "中国 房地产 市场",
     ],
     "hk_macro_indicators": [
-        "hk_cpi", "hk_ppi", "hk_unemployment", "hk_gdp", "hk_gdp_rate",
-        "hk_trade_balance",
+        "hk_hibor", "hk_exchange_rate", "hk_monetary_base",
+        "us_treasury", "hk_rmb_hibor",
         "cn_pmi_mfg", "cn_cpi", "cn_gdp", "cn_m2", "cn_trade_balance",
     ],
     "hk_prediction_queries": [

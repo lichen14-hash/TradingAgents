@@ -52,7 +52,6 @@ DEFAULT_PREDICTION_QUERIES: tuple[str, ...] = (
 CN_MACRO_INDICATORS: tuple[str, ...] = (
     "lpr_1y",
     "lpr_5y",
-    "mlf_rate",
     "shibor_overnight",
     "rrr",
     "cn_cpi",
@@ -90,12 +89,14 @@ CN_GLOBAL_NEWS_QUERIES: list[str] = [
 ]
 
 HK_MACRO_INDICATORS: tuple[str, ...] = (
-    "hk_cpi",
-    "hk_ppi",
-    "hk_unemployment",
-    "hk_gdp",
-    "hk_gdp_rate",
-    "hk_trade_balance",
+    # HKMA daily monetary statistics (reliable, daily updates)
+    "hk_hibor",
+    "hk_exchange_rate",
+    "hk_monetary_base",
+    # AKShare sources
+    "us_treasury",
+    "hk_rmb_hibor",
+    # Shared China mainland indicators (via china_macro)
     "cn_pmi_mfg",
     "cn_cpi",
     "cn_gdp",

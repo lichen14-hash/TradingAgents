@@ -165,7 +165,11 @@ def _fetch_single_series(
     return title, units, out.dropna()
 
 
-def _fetch_bond_yield(tenor: str = "10y") -> tuple[str, str, pd.DataFrame | None]:
+def _fetch_bond_yield(
+    tenor: str = "10y",
+    end_date: str | None = None,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+) -> tuple[str, str, pd.DataFrame | None]:
     ak = _get_ak()
 
     col_map = {
@@ -174,39 +178,44 @@ def _fetch_bond_yield(tenor: str = "10y") -> tuple[str, str, pd.DataFrame | None
     }
     title, cn_tenor, en_tenor = col_map.get(tenor, col_map["10y"])
 
-    # Try calling with and without keyword argument (API changed across versions)
-    df = None
-    for call_args in (
-        {"symbol": "中国国债收益率"},
-        {},
-    ):
-        try:
-            df = _safe_fetch(ak.bond_china_yield, **call_args)
-            if df is not None:
-                break
-        except TypeError:
-            continue
+    # Current API: bond_china_yield(start_date, end_date) — no symbol param.
+    # Must pass date range to get recent data.
+    kwargs = {}
+    if end_date:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_dt = end_dt - timedelta(days=lookback_days)
+        kwargs["start_date"] = start_dt.strftime("%Y%m%d")
+        kwargs["end_date"] = end_dt.strftime("%Y%m%d")
+
+    df = _safe_fetch(ak.bond_china_yield, **kwargs)
 
     if df is None:
         return title, "%", None
 
     cols = list(df.columns)
+    type_col = cols[0]
     date_col = _find_column(cols, ["日期", "date"])
     if date_col is None:
-        date_col = cols[0]
+        date_col = cols[1] if len(cols) > 1 else None
+
+    # Filter to government bond yield rows (国债)
+    if type_col != date_col:
+        gov_mask = df[type_col].astype(str).str.contains("国债", na=False)
+        if gov_mask.any():
+            df = df[gov_mask]
 
     # Find the yield column by matching tenor keywords
     value_col = None
     tenor_keys = [f"国债收益率:{cn_tenor}", cn_tenor, en_tenor]
     for key in tenor_keys:
         for c in cols:
-            if key in c and c != date_col:
+            if key in c and c != date_col and c != type_col:
                 value_col = c
                 break
         if value_col:
             break
 
-    if value_col is None:
+    if date_col is None or value_col is None:
         logger.warning("Bond yield column not found for %s in %s", tenor, cols)
         return title, "%", None
 
@@ -231,106 +240,142 @@ def _fetch_with_fallback(
     return title, units, None
 
 
+def _fetch_unemployment() -> tuple[str, str, pd.DataFrame | None]:
+    """Fetch China urban unemployment rate.
+
+    Primary: AKShare ``macro_china_urban_unemployment`` (NBS API, sometimes down).
+    Fallback: Tushare ``cn_pmi`` employment sub-index as a proxy.
+    """
+    title = "China Urban Survey Unemployment Rate"
+    result = _fetch_single_series(
+        "macro_china_urban_unemployment", title, "%",
+        ["日期", "date"],
+        ["全国城镇调查失业率", "失业率", "今值", "现值", "value"],
+    )
+    if result[2] is not None:
+        return result
+
+    # Fallback: Tushare PMI employment sub-index
+    try:
+        import os
+        token = os.getenv("TUSHARE_TOKEN")
+        if token:
+            import tushare as ts
+            ts.set_token(token)
+            pro = ts.pro_api()
+            df = pro.cn_pmi()
+            if df is not None and not df.empty:
+                date_col = _find_column(list(df.columns), ["MONTH", "month", "日期"])
+                emp_col = _find_column(list(df.columns), ["PMI011100", "pmi011100"])
+                if date_col and emp_col:
+                    out = df[[date_col, emp_col]].rename(
+                        columns={date_col: "date", emp_col: "value"}
+                    ).dropna()
+                    out["date"] = pd.to_datetime(out["date"], format="%Y%m", errors="coerce")
+                    out["value"] = pd.to_numeric(out["value"], errors="coerce")
+                    out = out.dropna()
+                    if not out.empty:
+                        return (
+                            "China PMI Employment Sub-Index (proxy for unemployment)",
+                            "Index", out,
+                        )
+    except Exception as e:
+        logger.warning("Tushare PMI employment fallback failed: %s", e)
+
+    return title, "%", None
+
+
 # Map indicator aliases to fetcher functions
 CN_MACRO_FETCHERS: dict[str, callable] = {
-    "lpr_1y": lambda: _fetch_lpr("1y"),
-    "lpr_5y": lambda: _fetch_lpr("5y"),
-    "mlf_rate": lambda: _fetch_with_fallback(
-        ["macro_china_mlf", "macro_china_mlf_rate"],
-        "MLF Rate (Medium-term Lending Facility)", "%",
-        ["日期", "报告日期", "date"], ["利率", "中标利率", "操作利率", "rate"],
-    ),
-    "shibor_overnight": lambda: _fetch_single_series(
+    "lpr_1y": lambda **kw: _fetch_lpr("1y"),
+    "lpr_5y": lambda **kw: _fetch_lpr("5y"),
+    "shibor_overnight": lambda **kw: _fetch_single_series(
         "macro_china_shibor_all", "SHIBOR Overnight Rate", "%",
         ["日期", "date"], ["O/N", "隔夜", "overnight"],
     ),
-    "rrr": lambda: _fetch_single_series(
+    "rrr": lambda **kw: _fetch_single_series(
         "macro_china_reserve_requirement_ratio", "Reserve Requirement Ratio", "%",
         ["生效时间", "生效日期", "公布时间", "公布日期", "日期", "date"],
         ["大型金融机构-调整后", "大型金融机构", "调整后", "存款准备金率", "ratio"],
     ),
-    "cn_cpi": lambda: _fetch_single_series(
+    "cn_cpi": lambda **kw: _fetch_single_series(
         "macro_china_cpi_monthly", "China CPI (YoY)", "%",
         ["统计日期", "日期", "date"],
         ["全国当月同比", "全国-当月", "今值", "现值", "同比", "value"],
     ),
-    "cn_ppi": lambda: _fetch_with_fallback(
+    "cn_ppi": lambda **kw: _fetch_with_fallback(
         ["macro_china_ppi_monthly", "macro_china_ppi"],
         "China PPI (YoY)", "%",
         ["月份", "统计日期", "日期", "date"],
         ["当月同比", "今值", "现值", "同比", "ppiTotal", "value"],
     ),
-    "cn_pmi_mfg": lambda: _fetch_single_series(
+    "cn_pmi_mfg": lambda **kw: _fetch_single_series(
         "macro_china_pmi", "China Manufacturing PMI", "Index",
         ["月份", "日期", "date"],
         ["制造业-指数", "制造业PMI", "制造业", "今值", "现值", "value"],
     ),
-    "cn_pmi_non_mfg": lambda: _fetch_single_series(
+    "cn_pmi_non_mfg": lambda **kw: _fetch_single_series(
         "macro_china_pmi", "China Non-Manufacturing PMI", "Index",
         ["月份", "日期", "date"],
         ["非制造业-指数", "非制造业PMI", "非制造业", "value"],
     ),
-    "cn_m2": lambda: _fetch_single_series(
+    "cn_m2": lambda **kw: _fetch_single_series(
         "macro_china_money_supply", "China M2 Money Supply (YoY)", "%",
         ["月份", "统计时间", "日期", "date"],
         ["货币和准货币(M2)-同比增长", "M2-同比增长", "M2同比", "m2"],
     ),
-    "cn_m1": lambda: _fetch_single_series(
+    "cn_m1": lambda **kw: _fetch_single_series(
         "macro_china_money_supply", "China M1 Money Supply (YoY)", "%",
         ["月份", "统计时间", "日期", "date"],
         ["货币(M1)-同比增长", "M1-同比增长", "M1同比", "m1"],
     ),
-    "social_financing": lambda: _fetch_single_series(
+    "social_financing": lambda **kw: _fetch_single_series(
         "macro_china_shrzgm", "China Aggregate Social Financing", "100M CNY",
         ["月份", "日期", "date"], ["社会融资规模增量", "当月", "value"],
     ),
-    "new_yuan_loans": lambda: _fetch_single_series(
+    "new_yuan_loans": lambda **kw: _fetch_single_series(
         "macro_china_new_financial_credit", "China New RMB Loans", "100M CNY",
         ["月份", "日期", "date"], ["当月", "人民币贷款增加", "value"],
     ),
-    "cn_gdp": lambda: _fetch_single_series(
+    "cn_gdp": lambda **kw: _fetch_single_series(
         "macro_china_gdp", "China GDP (YoY)", "%",
         ["季度", "日期", "date"],
         ["国内生产总值-同比增长", "累计同比", "今值", "现值", "gdp"],
     ),
-    "cn_industrial_production": lambda: _fetch_with_fallback(
+    "cn_industrial_production": lambda **kw: _fetch_with_fallback(
         ["macro_china_industrial_production_yoy", "macro_china_lnbzb"],
         "China Industrial Production (YoY)", "%",
         ["月份", "日期", "date"],
         ["同比增长", "当月同比", "今值", "现值", "value"],
     ),
-    "cn_fixed_asset_investment": lambda: _fetch_single_series(
+    "cn_fixed_asset_investment": lambda **kw: _fetch_single_series(
         "macro_china_gyzjz", "China Fixed Asset Investment (YoY)", "%",
         ["月份", "日期", "date"],
         ["同比增长", "累计同比", "今值", "现值", "value"],
     ),
-    "cn_retail_sales": lambda: _fetch_single_series(
+    "cn_retail_sales": lambda **kw: _fetch_single_series(
         "macro_china_xfzxx", "China Retail Sales (YoY)", "%",
         ["月份", "日期", "date"],
         ["消费品零售总额-指数值", "同比增长", "当月同比", "今值", "现值", "value"],
     ),
-    "cn_forex_reserves": lambda: _fetch_single_series(
+    "cn_forex_reserves": lambda **kw: _fetch_single_series(
         "macro_china_foreign_exchange_gold", "China Foreign Exchange Reserves", "100M USD",
         ["统计时间", "月份", "日期", "date"],
         ["国家外汇储备", "外汇储备", "黄金储备", "value"],
     ),
-    "cn_trade_balance": lambda: _fetch_single_series(
+    "cn_trade_balance": lambda **kw: _fetch_single_series(
         "macro_china_trade_balance", "China Trade Balance", "100M USD",
         ["月份", "日期", "date"],
         ["当月", "贸易差额", "今值", "现值", "value"],
     ),
-    "cn_housing_price": lambda: _fetch_single_series(
+    "cn_housing_price": lambda **kw: _fetch_single_series(
         "macro_china_new_house_price", "China 70-City New Home Price Index", "Index",
         ["月份", "日期", "date"],
         ["新建商品住宅价格指数-同比", "价格指数", "同比", "value"],
     ),
-    "cn_10y_treasury": lambda: _fetch_bond_yield("10y"),
-    "cn_1y_treasury": lambda: _fetch_bond_yield("1y"),
-    "cn_unemployment": lambda: _fetch_single_series(
-        "macro_china_urban_unemployment", "China Urban Survey Unemployment Rate", "%",
-        ["日期", "date"],
-        ["全国城镇调查失业率", "失业率", "今值", "现值", "value"],
-    ),
+    "cn_10y_treasury": lambda **kw: _fetch_bond_yield("10y", **kw),
+    "cn_1y_treasury": lambda **kw: _fetch_bond_yield("1y", **kw),
+    "cn_unemployment": lambda **kw: _fetch_unemployment(),
 }
 
 
@@ -421,7 +466,7 @@ def get_cn_macro_data(
     end_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     start_date = (end_dt - timedelta(days=look_back_days)).strftime("%Y-%m-%d")
 
-    title, units, df = fetcher()
+    title, units, df = fetcher(end_date=curr_date, lookback_days=look_back_days)
     if df is None or df.empty:
         return (
             f"## CN Macro: {title or indicator}\n"

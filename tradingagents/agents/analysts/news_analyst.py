@@ -34,6 +34,9 @@ def create_news_analyst(llm):
                 f"### {query}\n{data}" for query, data in n.prediction_markets.items()
             )
 
+        industry_block = n.industry_data if n and n.industry_data else "<unavailable>"
+        moneyflow_block = n.stock_moneyflow if n and n.stock_moneyflow else "<unavailable>"
+
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over the past week."
             f" Please write a comprehensive report of the current state of the world that is relevant"
@@ -44,6 +47,8 @@ def create_news_analyst(llm):
             f"<insider_transactions>\n{insider_block}\n</insider_transactions>\n\n"
             f"<macro_indicators>\n{macro_block}\n</macro_indicators>\n\n"
             f"<prediction_markets>\n{prediction_block}\n</prediction_markets>\n\n"
+            f"<industry_rotation>\n{industry_block}\n</industry_rotation>\n\n"
+            f"<stock_moneyflow>\n{moneyflow_block}\n</stock_moneyflow>\n\n"
             "Provide specific, actionable insights with supporting evidence to help traders"
             " make informed decisions. Make sure to append a Markdown table at the end of"
             " the report to organize key points in the report, organized and easy to read."

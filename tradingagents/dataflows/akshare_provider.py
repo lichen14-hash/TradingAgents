@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 from typing import Annotated
 
@@ -27,6 +28,9 @@ from .utils import is_cache_fresh, safe_ticker_component
 logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 30
+
+# Lock to protect pd.options.mode.string_storage in concurrent contexts
+_string_storage_lock = threading.Lock()
 
 _COL_MAP = {
     "日期": "Date",
@@ -382,79 +386,270 @@ def _format_financial_statement(
 # News
 # ---------------------------------------------------------------------------
 
+def _fetch_stock_announcements(code: str, ticker: str, limit: int = 10) -> list[str]:
+    """个股公告 — 上市公司一手披露（业绩预告/定增/回购/股权变动等）。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.stock_individual_notice_report, security=code, symbol="全部")
+        if df is None or df.empty:
+            return lines
+        title_col = _col(df, "公告标题", "title") or df.columns[2]
+        type_col = _col(df, "公告类型", "type")
+        date_col = _col(df, "公告日期", "date")
+        for _, row in df.head(limit).iterrows():
+            title = str(row[title_col]).strip()
+            # Remove the "贵州茅台:" prefix that repeats the company name
+            if ":" in title:
+                title = title.split(":", 1)[1].strip()
+            elif "：" in title:
+                title = title.split("：", 1)[1].strip()
+            ann_type = f"[{row[type_col]}] " if type_col else ""
+            date_str = f" ({row[date_col]})" if date_col else ""
+            lines.append(f"- {ann_type}{title}{date_str}")
+    except Exception as e:
+        logger.warning("stock_individual_notice_report failed for %s: %s", ticker, e)
+    return lines
+
+
+def _fetch_research_reports(code: str, ticker: str, limit: int = 10) -> list[str]:
+    """券商研报 — 机构评级 + EPS 预测。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.stock_research_report_em, symbol=code)
+        if df is None or df.empty:
+            return lines
+        title_col = _col(df, "报告名称", "report_name") or df.columns[3]
+        rating_col = _col(df, "东财评级", "rating")
+        broker_col = _col(df, "机构", "broker")
+        date_col = _col(df, "日期", "date")
+        # EPS forecast columns (dynamic year-based names)
+        eps_cols = [c for c in df.columns if "盈利预测-收益" in c]
+        pe_cols = [c for c in df.columns if "盈利预测-市盈率" in c]
+
+        for _, row in df.head(limit).iterrows():
+            title = str(row[title_col]).strip()
+            rating = f" [{row[rating_col]}]" if rating_col and pd.notna(row.get(rating_col)) else ""
+            broker = f" — {row[broker_col]}" if broker_col and pd.notna(row.get(broker_col)) else ""
+            date_str = f" ({row[date_col]})" if date_col and pd.notna(row.get(date_col)) else ""
+
+            line = f"- {title}{rating}{broker}{date_str}"
+            # Add EPS forecasts if available
+            forecasts = []
+            for ec, pc in zip(eps_cols[:2], pe_cols[:2]):
+                year = ec.split("-")[0] if "-" in ec else ""
+                eps_val = row.get(ec)
+                pe_val = row.get(pc)
+                if pd.notna(eps_val):
+                    f_str = f"{year}E EPS:{eps_val}"
+                    if pd.notna(pe_val):
+                        f_str += f"/PE:{pe_val}"
+                    forecasts.append(f_str)
+            if forecasts:
+                line += f"  ({', '.join(forecasts)})"
+            lines.append(line)
+    except Exception as e:
+        logger.warning("stock_research_report_em failed for %s: %s", ticker, e)
+    return lines
+
+
 def get_news(
     ticker: Annotated[str, "A-share ticker symbol"],
     start_date: Annotated[str, "Start date"],
     end_date: Annotated[str, "End date"],
 ) -> str:
-    """Get A-share specific news from EastMoney via AKShare."""
+    """Get A-share news from multiple sources.
+
+    Sources:
+    1. EastMoney stock news (东方财富个股新闻)
+    2. Company announcements (上市公司公告)
+    3. Analyst research reports (券商研报)
+    """
     ak = _get_ak()
     code = a_share_to_akshare_symbol(ticker)
 
-    # AKShare's stock_news_em uses r"　" as a regex pattern internally.
-    # pandas 3.0+ defaults to pyarrow's RE2 engine which doesn't support \u
-    # escapes. Temporarily switch to Python's re module for this call.
-    _prev = pd.options.mode.string_storage
-    pd.options.mode.string_storage = "python"
-    try:
-        df = call_with_retry(ak.stock_news_em, symbol=code)
-    finally:
-        pd.options.mode.string_storage = _prev
-    if df is None or df.empty:
-        raise NoMarketDataError(ticker, ticker, "AKShare returned no news")
-
-    title_col = None
-    for c in ("新闻标题", "title", "标题"):
-        if c in df.columns:
-            title_col = c
-            break
-
-    time_col = None
-    for c in ("发布时间", "publish_time", "时间"):
-        if c in df.columns:
-            time_col = c
-            break
-
-    source_col = None
-    for c in ("文章来源", "source", "来源"):
-        if c in df.columns:
-            source_col = c
-            break
-
-    content_col = None
-    for c in ("新闻内容", "content", "内容"):
-        if c in df.columns:
-            content_col = c
-            break
-
     lines = [f"# News for {ticker.upper()} ({start_date} to {end_date})\n"]
-    lines.append("# Source: EastMoney via AKShare\n\n")
 
-    if time_col:
-        df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        df = df[(df[time_col] >= start_dt) & (df[time_col] <= end_dt + pd.Timedelta(days=1))]
+    # Source 1: EastMoney stock news
+    # NOTE: Keep string_storage="python" for ALL DataFrame operations to avoid
+    # ArrowInvalid errors when news content contains \u escape sequences.
+    # Use a lock because pd.options.mode.string_storage is a global setting
+    # and concurrent threads can interfere with each other.
+    with _string_storage_lock:
+        _prev = pd.options.mode.string_storage
+        pd.options.mode.string_storage = "python"
+        try:
+            df = call_with_retry(ak.stock_news_em, symbol=code)
 
-    count = 0
-    for _, row in df.head(30).iterrows():
-        title = str(row[title_col]) if title_col else "N/A"
-        time_str = str(row[time_col]) if time_col else ""
-        source = str(row[source_col]) if source_col else ""
-        content = str(row[content_col])[:200] if content_col else ""
+            news_count = 0
+            if df is not None and not df.empty:
+                title_col = _col(df, "新闻标题", "title", "标题")
+                time_col = _col(df, "发布时间", "publish_time", "时间")
+                source_col = _col(df, "文章来源", "source", "来源")
+                content_col = _col(df, "新闻内容", "content", "内容")
 
-        lines.append(f"**{title}**")
-        if time_str:
-            lines.append(f"  Time: {time_str}")
-        if source:
-            lines.append(f"  Source: {source}")
-        if content:
-            lines.append(f"  {content}")
+                if time_col:
+                    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+                    start_dt = pd.to_datetime(start_date)
+                    end_dt = pd.to_datetime(end_date)
+                    df = df[(df[time_col] >= start_dt) & (df[time_col] <= end_dt + pd.Timedelta(days=1))]
+
+                lines.append("## 东方财富 · 个股新闻\n")
+                for _, row in df.head(15).iterrows():
+                    title = str(row[title_col]) if title_col else "N/A"
+                    time_str = f" [{row[time_col]}]" if time_col else ""
+                    source = f" ({row[source_col]})" if source_col else ""
+                    lines.append(f"- {title}{time_str}{source}")
+                    if content_col:
+                        snippet = str(row[content_col])[:200]
+                        if snippet:
+                            lines.append(f"  {snippet}")
+                    news_count += 1
+                lines.append("")
+        finally:
+            pd.options.mode.string_storage = _prev
+
+    # Source 2: Company announcements
+    ann_lines = _fetch_stock_announcements(code, ticker, limit=10)
+    if ann_lines:
+        lines.append("## 上市公司公告\n")
+        lines.extend(ann_lines)
         lines.append("")
-        count += 1
 
-    lines.insert(2, f"# Total articles: {count}\n")
+    # Source 3: Analyst research reports
+    report_lines = _fetch_research_reports(code, ticker, limit=8)
+    if report_lines:
+        lines.append("## 券商研报\n")
+        lines.extend(report_lines)
+        lines.append("")
+
+    if news_count == 0 and not ann_lines and not report_lines:
+        raise NoMarketDataError(ticker, ticker, "AKShare returned no news data")
+
     return "\n".join(lines)
+
+
+def _col(df: pd.DataFrame, *candidates: str) -> str | None:
+    """Return the first column name that exists in *df*."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+def _fetch_eastmoney_global(limit: int) -> list[str]:
+    """东方财富全球财经快讯 — 实时 200 条。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.stock_info_global_em)
+        if df is None or df.empty:
+            return lines
+        title_col = _col(df, "标题", "title") or df.columns[0]
+        summary_col = _col(df, "摘要", "summary")
+        time_col = _col(df, "发布时间", "publish_time")
+        for _, row in df.head(limit).iterrows():
+            title = str(row[title_col]).strip()
+            time_str = f" [{row[time_col]}]" if time_col else ""
+            lines.append(f"- {title}{time_str}")
+            if summary_col:
+                snippet = str(row[summary_col]).strip()[:200]
+                if snippet and snippet != title:
+                    lines.append(f"  {snippet}")
+    except Exception as e:
+        logger.warning("stock_info_global_em failed: %s", e)
+    return lines
+
+
+def _fetch_caixin_news(limit: int) -> list[str]:
+    """财新网头条 — 深度财经报道 100 条。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.stock_news_main_cx)
+        if df is None or df.empty:
+            return lines
+        tag_col = _col(df, "tag", "标签") or "tag"
+        summary_col = _col(df, "summary", "摘要") or "summary"
+        for _, row in df.head(limit).iterrows():
+            tag = str(row[tag_col]).strip() if tag_col in df.columns else ""
+            summary = str(row[summary_col]).strip() if summary_col in df.columns else str(row.iloc[0]).strip()
+            prefix = f"[{tag}] " if tag else ""
+            lines.append(f"- {prefix}{summary}")
+    except Exception as e:
+        logger.warning("stock_news_main_cx failed: %s", e)
+    return lines
+
+
+def _fetch_economic_calendar(limit: int) -> list[str]:
+    """百度经济日历 — 宏观数据发布（实际值 vs 预期值）。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    try:
+        df = call_with_retry(ak.news_economic_baidu)
+        if df is None or df.empty:
+            return lines
+        # Columns: 日期, 时间, 地区, 事件, 公布, 预期, 前值, 重要性
+        event_col = _col(df, "事件", "event") or df.columns[3] if len(df.columns) > 3 else df.columns[0]
+        region_col = _col(df, "地区", "region")
+        actual_col = _col(df, "公布", "actual")
+        expect_col = _col(df, "预期", "forecast")
+        prev_col = _col(df, "前值", "previous")
+        importance_col = _col(df, "重要性", "importance")
+
+        # Only show high-importance events (重要性 >= 2) or China-related
+        for _, row in df.iterrows():
+            if len(lines) >= limit:
+                break
+            importance = 0
+            if importance_col:
+                try:
+                    importance = int(row[importance_col])
+                except (ValueError, TypeError):
+                    pass
+            region = str(row[region_col]).strip() if region_col else ""
+            is_china = "中国" in region or "中" in region
+            if importance < 2 and not is_china:
+                continue
+            event = str(row[event_col]).strip()
+            parts = [f"- {region} {event}" if region else f"- {event}"]
+            vals = []
+            if actual_col and pd.notna(row.get(actual_col)):
+                vals.append(f"公布: {row[actual_col]}")
+            if expect_col and pd.notna(row.get(expect_col)):
+                vals.append(f"预期: {row[expect_col]}")
+            if prev_col and pd.notna(row.get(prev_col)):
+                vals.append(f"前值: {row[prev_col]}")
+            if vals:
+                parts[0] += f" ({', '.join(vals)})"
+            lines.append(parts[0])
+    except Exception as e:
+        logger.warning("news_economic_baidu failed: %s", e)
+    return lines
+
+
+def _fetch_cctv_news(curr_date: str, limit: int) -> list[str]:
+    """CCTV 新闻联播 — 备用源。"""
+    ak = _get_ak()
+    lines: list[str] = []
+    date_str = curr_date.replace("-", "")
+    try:
+        df = call_with_retry(ak.news_cctv, date=date_str)
+        if df is None or df.empty:
+            return lines
+        title_col = _col(df, "title", "标题") or df.columns[0]
+        content_col = _col(df, "content", "内容")
+        for _, row in df.head(limit).iterrows():
+            title = str(row[title_col]).strip()
+            lines.append(f"- {title}")
+            if content_col:
+                snippet = str(row[content_col]).strip()[:150]
+                if snippet:
+                    lines.append(f"  {snippet}")
+    except Exception as e:
+        logger.warning("news_cctv failed: %s", e)
+    return lines
 
 
 def get_global_news(
@@ -462,40 +657,49 @@ def get_global_news(
     look_back_days: int | None = None,
     limit: int | None = None,
 ) -> str:
-    """Get Chinese macro/market news via AKShare (CCTV news)."""
-    ak = _get_ak()
-    date_str = curr_date.replace("-", "")
+    """Get Chinese macro/market news from multiple sources.
 
-    lines = [f"# China macro news around {curr_date}\n"]
-    lines.append("# Source: CCTV Finance via AKShare\n\n")
+    Sources (in order):
+    1. EastMoney global financial news (实时快讯, ~200 articles)
+    2. Caixin headlines (财新深度报道, ~100 articles)
+    3. Baidu economic calendar (经济日历, macro data releases)
+    4. CCTV news (fallback only)
+    """
+    max_per_source = (limit or 30) // 3 or 10
+    sections: list[str] = [f"# China macro & financial news around {curr_date}\n"]
 
-    try:
-        df = call_with_retry(ak.news_cctv, date=date_str)
-        if df is not None and not df.empty:
-            title_col = None
-            for c in ("title", "标题"):
-                if c in df.columns:
-                    title_col = c
-                    break
-            content_col = None
-            for c in ("content", "内容"):
-                if c in df.columns:
-                    content_col = c
-                    break
+    # Source 1: EastMoney real-time financial news
+    em_lines = _fetch_eastmoney_global(max_per_source)
+    if em_lines:
+        sections.append("## 东方财富 · 财经快讯\n")
+        sections.extend(em_lines)
+        sections.append("")
 
-            max_items = limit or 15
-            for _, row in df.head(max_items).iterrows():
-                title = str(row[title_col]) if title_col else str(row.iloc[0])
-                lines.append(f"- {title}")
-                if content_col:
-                    snippet = str(row[content_col])[:150]
-                    lines.append(f"  {snippet}")
-                lines.append("")
-    except Exception as e:
-        logger.warning("AKShare news_cctv failed: %s", e)
-        lines.append("(CCTV news data unavailable)\n")
+    # Source 2: Caixin headlines
+    cx_lines = _fetch_caixin_news(max_per_source)
+    if cx_lines:
+        sections.append("## 财新网 · 深度报道\n")
+        sections.extend(cx_lines)
+        sections.append("")
 
-    return "\n".join(lines)
+    # Source 3: Economic calendar (high-importance events)
+    ec_lines = _fetch_economic_calendar(max_per_source)
+    if ec_lines:
+        sections.append("## 经济日历 · 重要数据\n")
+        sections.extend(ec_lines)
+        sections.append("")
+
+    # Fallback: if all three sources returned nothing, try CCTV
+    if not em_lines and not cx_lines and not ec_lines:
+        cctv_lines = _fetch_cctv_news(curr_date, limit or 15)
+        if cctv_lines:
+            sections.append("## CCTV 新闻联播（备用）\n")
+            sections.extend(cctv_lines)
+            sections.append("")
+        else:
+            sections.append("(No news data available)\n")
+
+    return "\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
@@ -523,3 +727,155 @@ def get_insider_transactions(
         lines.append(f"Data unavailable: {e}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Industry / sector rotation data
+# ---------------------------------------------------------------------------
+
+def _resolve_industry_name(ticker: str) -> str | None:
+    """Look up the industry name for *ticker*.
+
+    Tries Tushare ``get_stock_industry`` first (reliable Shenwan classification),
+    falls back to AKShare ``stock_individual_info_em`` if Tushare is unavailable.
+    """
+    try:
+        from .tushare_provider import get_stock_industry
+        name, _code = get_stock_industry(ticker)
+        return name
+    except Exception:
+        pass
+
+    try:
+        ak = _get_ak()
+        code = a_share_to_akshare_symbol(ticker)
+        df = call_with_retry(ak.stock_individual_info_em, symbol=code)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                key = str(row.iloc[0])
+                if "行业" in key:
+                    return str(row.iloc[1]).strip()
+    except Exception as e:
+        logger.warning("AKShare stock_individual_info_em failed for %s: %s", ticker, e)
+
+    return None
+
+
+def get_industry_data(
+    ticker: Annotated[str, "A-share ticker symbol"],
+    trade_date: Annotated[str, "Trade date YYYY-MM-DD"],
+) -> str:
+    """Get industry rotation context: sector ranking + fund flow ranking.
+
+    Combines Tushare (industry classification) with AKShare (industry ranking
+    and fund flow data that requires 5000+ Tushare points).
+    """
+    ak = _get_ak()
+    industry_name = _resolve_industry_name(ticker)
+
+    sections: list[str] = [f"## 行业/板块轮动分析 — {ticker}\n"]
+
+    if industry_name:
+        sections.append(f"**所属行业（申万一级）**: {industry_name}\n")
+    else:
+        sections.append("**所属行业**: 未能识别\n")
+
+    # --- 1. Industry ranking by change % ---
+    try:
+        df = call_with_retry(ak.stock_board_industry_name_em)
+        if df is not None and not df.empty:
+            rank_col = _col(df, "排名", "序号")
+            name_col = _col(df, "板块名称", "板块")
+            chg_col = _col(df, "涨跌幅")
+            lead_col = _col(df, "领涨股票")
+            lead_chg_col = _col(df, "领涨股票-涨跌幅")
+
+            total = len(df)
+            sections.append(f"### 行业涨跌排名 (共{total}个行业)\n")
+
+            target_row = None
+            if industry_name and name_col:
+                match = df[df[name_col].astype(str).str.contains(industry_name, na=False)]
+                if not match.empty:
+                    target_row = match.iloc[0]
+
+            def _fmt_row(row):
+                rank = row[rank_col] if rank_col else "?"
+                name = row[name_col] if name_col else "?"
+                chg = row[chg_col] if chg_col else "?"
+                lead = row[lead_col] if lead_col else ""
+                lead_c = row[lead_chg_col] if lead_chg_col else ""
+                return f"| {rank} | {name} | {chg}% | {lead} ({lead_c}%) |"
+
+            sections.append("| 排名 | 行业 | 涨跌幅 | 领涨股 |")
+            sections.append("|---|---|---|---|")
+
+            for _, row in df.head(5).iterrows():
+                sections.append(_fmt_row(row))
+
+            if target_row is not None:
+                t_rank = target_row[rank_col] if rank_col else 0
+                if isinstance(t_rank, (int, float)) and t_rank > 5:
+                    sections.append("| ... | ... | ... | ... |")
+                    sections.append(f"| **{_fmt_row(target_row)[2:]}  ← 目标行业")
+
+            sections.append("| ... | ... | ... | ... |")
+            for _, row in df.tail(3).iterrows():
+                sections.append(_fmt_row(row))
+
+            sections.append("")
+    except Exception as e:
+        logger.warning("stock_board_industry_name_em failed: %s", e)
+        sections.append("行业涨跌排名数据暂不可用\n")
+
+    # --- 2. Industry fund flow ranking ---
+    try:
+        df = call_with_retry(
+            ak.stock_sector_fund_flow_rank,
+            indicator="今日",
+            sector_type="行业资金流",
+        )
+        if df is not None and not df.empty:
+            rank_col = _col(df, "序号")
+            name_col = _col(df, "名称", "行业")
+            chg_col = _col(df, "今日涨跌幅")
+            net_col = _col(df, "今日主力净流入-净额")
+            pct_col = _col(df, "今日主力净流入-净占比")
+
+            sections.append("### 行业资金流向排名\n")
+            sections.append("| 排名 | 行业 | 涨跌幅 | 主力净流入(亿) | 净占比 |")
+            sections.append("|---|---|---|---|---|")
+
+            def _fmt_flow(row):
+                rank = row[rank_col] if rank_col else "?"
+                name = row[name_col] if name_col else "?"
+                chg = row[chg_col] if chg_col else "?"
+                net = float(row[net_col]) / 1e8 if net_col and pd.notna(row.get(net_col)) else 0
+                pct = row[pct_col] if pct_col else "?"
+                return f"| {rank} | {name} | {chg}% | {net:.1f} | {pct}% |"
+
+            for _, row in df.head(5).iterrows():
+                sections.append(_fmt_flow(row))
+
+            target_flow = None
+            if industry_name and name_col:
+                match = df[df[name_col].astype(str).str.contains(industry_name, na=False)]
+                if not match.empty:
+                    target_flow = match.iloc[0]
+
+            if target_flow is not None:
+                t_rank = target_flow[rank_col] if rank_col else 0
+                if isinstance(t_rank, (int, float)) and t_rank > 5:
+                    sections.append("| ... | ... | ... | ... | ... |")
+                    sections.append(f"| **{_fmt_flow(target_flow)[2:]}  ← 目标行业")
+
+            sections.append("| ... | ... | ... | ... | ... |")
+            for _, row in df.tail(3).iterrows():
+                sections.append(_fmt_flow(row))
+
+            sections.append("")
+    except Exception as e:
+        logger.warning("stock_sector_fund_flow_rank failed: %s", e)
+        sections.append("行业资金流向数据暂不可用\n")
+
+    return "\n".join(sections)

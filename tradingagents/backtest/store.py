@@ -103,6 +103,10 @@ class BacktestStore:
         *,
         name: str = "",
         final_state_path: str = "",
+        cost_price: float | None = None,
+        shares: float | None = None,
+        position_pct: float | None = None,
+        source: str = "web",
     ) -> int | None:
         conn = self.db.get_connection()
         signal_numeric = _RATING_TO_NUMERIC.get(rating, 0)
@@ -124,8 +128,9 @@ class BacktestStore:
                     rating, signal_numeric, price_at_signal,
                     price_target, time_horizon, executive_summary,
                     analysts_used, deep_model, feedback_enabled,
-                    final_state_path
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    final_state_path,
+                    cost_price, shares, position_pct, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ticker,
                     name or final_state.get("company_of_interest", ticker),
@@ -142,6 +147,10 @@ class BacktestStore:
                     config.get("deep_think_llm", ""),
                     1 if config.get("backtest_feedback_enabled") else 0,
                     final_state_path,
+                    cost_price,
+                    shares,
+                    position_pct,
+                    source,
                 ),
             )
             conn.commit()

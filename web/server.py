@@ -62,6 +62,7 @@ class TaskInfo:
     batch_id: str = ""
     created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     cancelled: bool = False
+    position: Any = None
 
 
 @dataclass
@@ -76,9 +77,10 @@ batches: dict[str, BatchInfo] = {}
 _tasks_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Sequential work queue
+# Concurrent work pool (max 5 parallel analyses)
 # ---------------------------------------------------------------------------
 
+_MAX_CONCURRENT_ANALYSES = 5
 _work_queue: _queue_mod.Queue[str] = _queue_mod.Queue()
 
 
@@ -98,8 +100,11 @@ def _worker_loop():
             _work_queue.task_done()
 
 
-_worker_thread = threading.Thread(target=_worker_loop, daemon=True)
-_worker_thread.start()
+_worker_threads = []
+for _i in range(_MAX_CONCURRENT_ANALYSES):
+    _t = threading.Thread(target=_worker_loop, daemon=True, name=f"analyst-{_i}")
+    _t.start()
+    _worker_threads.append(_t)
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +118,26 @@ from web.backtest_routes import backtest_router
 app.include_router(backtest_router)
 
 
+class PositionInfo(BaseModel):
+    cost_price: float | None = None
+    shares: float | None = None
+    position_pct: float | None = None
+
+
 class AnalyzeRequest(BaseModel):
     ticker: str
     date: str | None = None
+    position: PositionInfo | None = None
+
+
+class BatchItem(BaseModel):
+    ticker: str
+    position: PositionInfo | None = None
 
 
 class BatchAnalyzeRequest(BaseModel):
-    tickers: list[str]
+    tickers: list[str] | None = None
+    items: list[BatchItem] | None = None
     date: str | None = None
 
 
@@ -215,10 +233,22 @@ def _get_analysts(ticker: str) -> tuple[str, ...]:
 def _make_config() -> dict:
     from tradingagents.default_config import DEFAULT_CONFIG
     config = DEFAULT_CONFIG.copy()
-    config["max_debate_rounds"] = 1
-    config["max_risk_discuss_rounds"] = 1
     config["output_language"] = "Chinese"
     return config
+
+
+def _format_position_context(pos: PositionInfo | None, ticker: str) -> str:
+    if pos is None or (pos.cost_price is None and pos.shares is None and pos.position_pct is None):
+        return f"用户当前未持有 {ticker}，请从「是否值得建仓」的角度给出建议（包括建议入场价位、建议仓位比例等）。"
+    parts = [f"用户当前持有 {ticker} 的仓位信息："]
+    if pos.cost_price is not None:
+        parts.append(f"- 持仓成本价: {pos.cost_price}")
+    if pos.shares is not None:
+        parts.append(f"- 持仓数量: {pos.shares}")
+    if pos.position_pct is not None:
+        parts.append(f"- 该股占总仓位比例: {pos.position_pct}%")
+    parts.append("请结合用户的实际成本和仓位，给出针对性的操作建议（如浮盈/浮亏幅度、是否止盈止损、是否加仓减仓等）。")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +284,10 @@ def _run_analysis(task: TaskInfo):
         _emit(task, "init", f"开始分析 {name} ({task.ticker})")
 
         from tradingagents.datacollector import DataCollector
+        from tradingagents.datacollector.collector import (
+            DataIncompleteError,
+            validate_bundle_completeness,
+        )
         from tradingagents.dataflows.config import set_config
 
         config = _make_config()
@@ -275,6 +309,16 @@ def _run_analysis(task: TaskInfo):
 
         _check_cancelled(task)
 
+        # Phase 1.5: Data completeness validation
+        issues = validate_bundle_completeness(bundle)
+        if issues:
+            summary_lines = [f"  - {i['category']}/{i['field']}: {i['reason'][:80]}" for i in issues[:10]]
+            if len(issues) > 10:
+                summary_lines.append(f"  ... 等共 {len(issues)} 项")
+            detail = "\n".join(summary_lines)
+            logger.warning("Data incomplete for %s, aborting analysis:\n%s", task.ticker, detail)
+            raise DataIncompleteError(issues)
+
         # Phase 2: LLM analysis via graph streaming
         task.status = "analyzing"
         _emit(task, "analyzing", "正在启动 AI 分析...")
@@ -288,11 +332,13 @@ def _run_analysis(task: TaskInfo):
         )
 
         instrument_context = graph.resolve_instrument_context(task.ticker)
+        portfolio_ctx = _format_position_context(task.position, task.ticker)
         init_state = graph.propagator.create_initial_state(
             task.ticker,
             bundle.metadata.trade_date,
             instrument_context=instrument_context,
             data_bundle=bundle.model_dump(),
+            user_portfolio_context=portfolio_ctx,
         )
         args = graph.propagator.get_graph_args()
 
@@ -359,6 +405,26 @@ def _run_analysis(task: TaskInfo):
             )
         except Exception as exc:
             logger.warning("Failed to save final state: %s", exc)
+
+        # Record prediction to backtest database
+        if graph._backtest_store:
+            try:
+                pos = task.position
+                graph._backtest_store.record_prediction(
+                    ticker=task.ticker,
+                    trade_date=bundle.metadata.trade_date,
+                    rating=signal,
+                    final_state=final_state,
+                    config=config,
+                    name=task.name or "",
+                    final_state_path=str(state_path),
+                    cost_price=pos.cost_price if pos else None,
+                    shares=pos.shares if pos else None,
+                    position_pct=pos.position_pct if pos else None,
+                    source="web",
+                )
+            except Exception as exc:
+                logger.warning("Failed to record prediction: %s", exc)
 
         _check_cancelled(task)
 
@@ -449,15 +515,23 @@ def _scan_history():
             continue
 
         signal = ""
-        state_file = OUTPUT_DIR / f"{stem}_final_state.json"
-        if not state_file.exists():
+        state_candidates = [
+            OUTPUT_DIR / f"{ticker}_final_state.json",
+            OUTPUT_DIR / f"{stem}_final_state.json",
+        ]
+        state_file = None
+        for sc in state_candidates:
+            if sc.exists():
+                if state_file is None or sc.stat().st_mtime > state_file.stat().st_mtime:
+                    state_file = sc
+        if state_file is None:
             candidates = sorted(
                 OUTPUT_DIR.glob(f"{ticker}_*_latest.json"),
                 key=lambda p: p.stat().st_mtime, reverse=True,
             )
             if candidates:
                 state_file = candidates[0]
-        if state_file.exists():
+        if state_file is not None and state_file.exists():
             try:
                 data = json.loads(state_file.read_text(encoding="utf-8"))
                 decision = data.get("final_trade_decision", "")
@@ -523,7 +597,7 @@ async def submit_analysis(req: AnalyzeRequest):
 
     task_id = uuid.uuid4().hex[:12]
     name = _sina_name_lookup(ticker) or code
-    task = TaskInfo(task_id=task_id, ticker=ticker, name=name, date=date)
+    task = TaskInfo(task_id=task_id, ticker=ticker, name=name, date=date, position=req.position)
 
     with _tasks_lock:
         tasks[task_id] = task
@@ -535,9 +609,16 @@ async def submit_analysis(req: AnalyzeRequest):
 
 @app.post("/api/analyze/batch")
 async def submit_batch_analysis(req: BatchAnalyzeRequest):
-    if not req.tickers:
+    # Build unified list: support both old {tickers} and new {items} format
+    raw_items: list[tuple[str, PositionInfo | None]] = []
+    if req.items:
+        raw_items = [(item.ticker, item.position) for item in req.items]
+    elif req.tickers:
+        raw_items = [(t, None) for t in req.tickers]
+
+    if not raw_items:
         raise HTTPException(400, "请输入至少一个股票代码")
-    if len(req.tickers) > 10:
+    if len(raw_items) > 10:
         raise HTTPException(400, "批量分析最多支持 10 个股票代码")
 
     date = req.date or datetime.now().strftime("%Y-%m-%d")
@@ -545,20 +626,20 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
     # Normalize, deduplicate, and validate all tickers first
     errors = []
     seen = set()
-    validated: list[tuple[str, str, str]] = []  # (ticker, code, name)
-    for raw in req.tickers:
-        raw = raw.strip()
-        if not raw:
+    validated: list[tuple[str, str, str, PositionInfo | None]] = []
+    for raw_ticker, pos in raw_items:
+        raw_ticker = raw_ticker.strip()
+        if not raw_ticker:
             continue
-        ticker, code = _normalize_ticker(raw)
-        err = _validate_ticker(raw, ticker)
+        ticker, code = _normalize_ticker(raw_ticker)
+        err = _validate_ticker(raw_ticker, ticker)
         if err:
             errors.append(err)
             continue
         if ticker in seen:
             continue
         seen.add(ticker)
-        validated.append((ticker, code, raw))
+        validated.append((ticker, code, raw_ticker, pos))
 
     if errors:
         raise HTTPException(400, "；".join(errors))
@@ -568,7 +649,7 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
 
     # Check for already-active tickers
     with _tasks_lock:
-        for ticker, code, raw in validated:
+        for ticker, code, raw_ticker, pos in validated:
             for t in tasks.values():
                 if t.ticker == ticker and t.status in ("pending", "collecting", "analyzing", "generating"):
                     raise HTTPException(400, f"{ticker} 正在分析中，请等待完成")
@@ -576,12 +657,12 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
     batch_id = uuid.uuid4().hex[:12]
     task_list = []
 
-    for ticker, code, raw in validated:
+    for ticker, code, raw_ticker, pos in validated:
         task_id = uuid.uuid4().hex[:12]
         name = _sina_name_lookup(ticker) or code
         task = TaskInfo(
             task_id=task_id, ticker=ticker, name=name,
-            date=date, batch_id=batch_id,
+            date=date, batch_id=batch_id, position=pos,
         )
         with _tasks_lock:
             tasks[task_id] = task

@@ -65,7 +65,12 @@ except ImportError:
 
 try:
     from .tushare_provider import (
+        get_balance_sheet as get_tushare_balance_sheet,
+        get_cashflow as get_tushare_cashflow,
+        get_fundamentals as get_tushare_fundamentals,
+        get_income_statement as get_tushare_income_statement,
         get_indicators as get_tushare_indicators,
+        get_insider_transactions as get_tushare_insider_transactions,
         get_stock_data as get_tushare_stock,
     )
     _TUSHARE_AVAILABLE = True
@@ -86,7 +91,10 @@ except ImportError:
 
 try:
     from .hk_akshare_provider import (
+        get_balance_sheet as get_hk_akshare_balance_sheet,
+        get_cashflow as get_hk_akshare_cashflow,
         get_fundamentals as get_hk_akshare_fundamentals,
+        get_income_statement as get_hk_akshare_income_statement,
         get_indicators as get_hk_akshare_indicators,
         get_global_news as get_hk_akshare_global_news,
         get_news as get_hk_akshare_news,
@@ -210,6 +218,7 @@ VENDOR_METHODS = {
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        **({"tushare": get_tushare_fundamentals} if _TUSHARE_AVAILABLE else {}),
         **({"akshare": get_akshare_fundamentals} if _AKSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_fundamentals} if _BAOSTOCK_AVAILABLE else {}),
         **({"hk_akshare": get_hk_akshare_fundamentals} if _HK_AKSHARE_AVAILABLE else {}),
@@ -217,20 +226,26 @@ VENDOR_METHODS = {
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        **({"tushare": get_tushare_balance_sheet} if _TUSHARE_AVAILABLE else {}),
         **({"akshare": get_akshare_balance_sheet} if _AKSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_balance_sheet} if _BAOSTOCK_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_balance_sheet} if _HK_AKSHARE_AVAILABLE else {}),
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        **({"tushare": get_tushare_cashflow} if _TUSHARE_AVAILABLE else {}),
         **({"akshare": get_akshare_cashflow} if _AKSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_cashflow} if _BAOSTOCK_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_cashflow} if _HK_AKSHARE_AVAILABLE else {}),
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        **({"tushare": get_tushare_income_statement} if _TUSHARE_AVAILABLE else {}),
         **({"akshare": get_akshare_income_statement} if _AKSHARE_AVAILABLE else {}),
         **({"baostock": get_baostock_income_statement} if _BAOSTOCK_AVAILABLE else {}),
+        **({"hk_akshare": get_hk_akshare_income_statement} if _HK_AKSHARE_AVAILABLE else {}),
     },
     # news_data
     "get_news": {
@@ -248,6 +263,7 @@ VENDOR_METHODS = {
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        **({"tushare": get_tushare_insider_transactions} if _TUSHARE_AVAILABLE else {}),
         **({"akshare": get_akshare_insider_transactions} if _AKSHARE_AVAILABLE else {}),
     },
     # macro_data
@@ -287,15 +303,15 @@ def get_vendor(category: str, method: str = None) -> str:
     return config.get("data_vendors", {}).get(category, "default")
 
 _A_SHARE_VENDOR_CHAINS = {
-    "get_stock_data": "akshare,tushare,baostock,sina,efinance",
-    "get_indicators": "akshare,tushare,baostock,sina,efinance",
-    "get_fundamentals": "akshare,baostock",
-    "get_balance_sheet": "akshare,baostock",
-    "get_cashflow": "akshare,baostock",
-    "get_income_statement": "akshare,baostock",
+    "get_stock_data": "tushare,akshare,baostock,sina,efinance",
+    "get_indicators": "tushare,akshare,baostock,sina,efinance",
+    "get_fundamentals": "tushare,akshare,baostock",
+    "get_balance_sheet": "tushare,akshare,baostock",
+    "get_cashflow": "tushare,akshare,baostock",
+    "get_income_statement": "tushare,akshare,baostock",
     "get_news": "akshare",
     "get_global_news": "akshare",
-    "get_insider_transactions": "akshare",
+    "get_insider_transactions": "tushare,akshare",
     "get_macro_indicators": "cn_macro",
     "get_prediction_markets": "cn_signals",
 }
@@ -304,9 +320,9 @@ _HK_VENDOR_CHAINS = {
     "get_stock_data": "hk_akshare,efinance,yfinance",
     "get_indicators": "hk_akshare,efinance,yfinance",
     "get_fundamentals": "yfinance,hk_akshare",
-    "get_balance_sheet": "yfinance",
-    "get_cashflow": "yfinance",
-    "get_income_statement": "yfinance",
+    "get_balance_sheet": "hk_akshare,yfinance",
+    "get_cashflow": "hk_akshare,yfinance",
+    "get_income_statement": "hk_akshare,yfinance",
     "get_news": "hk_akshare,yfinance",
     "get_global_news": "hk_akshare,akshare",
     "get_insider_transactions": "yfinance",

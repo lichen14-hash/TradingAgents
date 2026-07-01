@@ -165,12 +165,12 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
 
         if is_a_share(canonical):
             _a_share_loaders = [
-                ("AKShare", lambda: __import__(
-                    "tradingagents.dataflows.akshare_provider", fromlist=["_load_ohlcv_akshare"]
-                )._load_ohlcv_akshare(canonical, curr_date)),
                 ("TuShare", lambda: __import__(
                     "tradingagents.dataflows.tushare_provider", fromlist=["_load_ohlcv_tushare"]
                 )._load_ohlcv_tushare(canonical, curr_date)),
+                ("AKShare", lambda: __import__(
+                    "tradingagents.dataflows.akshare_provider", fromlist=["_load_ohlcv_akshare"]
+                )._load_ohlcv_akshare(canonical, curr_date)),
                 ("BaoStock", lambda: __import__(
                     "tradingagents.dataflows.baostock_provider", fromlist=["_load_ohlcv_baostock"]
                 )._load_ohlcv_baostock(canonical, curr_date)),

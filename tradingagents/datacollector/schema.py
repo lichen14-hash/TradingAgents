@@ -35,6 +35,8 @@ class NewsData(BaseModel):
     insider_transactions: str = ""
     macro_indicators: dict[str, str] = Field(default_factory=dict)
     prediction_markets: dict[str, str] = Field(default_factory=dict)
+    industry_data: str = ""
+    stock_moneyflow: str = ""
 
 
 class FundamentalsData(BaseModel):
