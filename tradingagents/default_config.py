@@ -1,6 +1,11 @@
 import os
 
-_TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
+# Data root: project-local so everything migrates with the repo.
+# Override via TRADINGAGENTS_HOME env var if needed.
+_TRADINGAGENTS_HOME = os.getenv(
+    "TRADINGAGENTS_HOME",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "local_data"),
+)
 
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no

@@ -22,6 +22,7 @@ def create_fundamentals_analyst(llm):
         cf_a_block = f.cashflow_annual if f else "<unavailable>"
         inc_q_block = f.income_quarterly if f else "<unavailable>"
         inc_a_block = f.income_annual if f else "<unavailable>"
+        comp_intel_block = f.competitive_intelligence if f else "<unavailable>"
 
         system_message = (
             "You are a researcher tasked with analyzing fundamental information about a company."
@@ -33,7 +34,9 @@ def create_fundamentals_analyst(llm):
             " detail as possible. Provide specific, actionable insights with supporting"
             " evidence to help traders make informed decisions.\n\n"
             "IMPORTANT - Competitive Moat & Barriers Analysis:\n"
-            "You MUST include a dedicated section analyzing the company's competitive moat.\n"
+            "Include a dedicated section (approximately 20-30% of your report) analyzing the company's competitive moat.\n"
+            "The majority of your report (70-80%) should still focus on financial fundamentals analysis\n"
+            "(revenue trends, profitability, cash flow health, balance sheet strength, valuation ratios).\n"
             "Specifically address:\n"
             "1. Core Technologies: What specific technologies, patents, or proprietary processes"
             "   does the company possess? What makes them technically difficult to replicate?\n"
@@ -53,6 +56,11 @@ def create_fundamentals_analyst(llm):
             "<cashflow_annual>\n" + cf_a_block + "\n</cashflow_annual>\n\n"
             "<income_statement_quarterly>\n" + inc_q_block + "\n</income_statement_quarterly>\n\n"
             "<income_statement_annual>\n" + inc_a_block + "\n</income_statement_annual>\n\n"
+            "<competitive_intelligence>\n" + comp_intel_block + "\n</competitive_intelligence>\n\n"
+            "The <competitive_intelligence> section above contains web search results about the company's"
+            " competitive moat, patents, market share, key customers, and competitive landscape."
+            " Use this as supporting evidence in your Moat section, but do NOT let it overshadow"
+            " your financial fundamentals analysis. Treat it as supplementary context, not the core.\n\n"
             "Make sure to append a Markdown table at the end of the report to organize"
             " key points in the report, organized and easy to read."
             + get_language_instruction()

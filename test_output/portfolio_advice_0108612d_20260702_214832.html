@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>组合配置建议报告</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f5f7fa; color: #333; line-height: 1.7; }
+.container { max-width: 900px; margin: 0 auto; padding: 30px 20px; }
+.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 40px 30px; border-radius: 12px; margin-bottom: 30px; }
+.header h1 { font-size: 26px; margin-bottom: 8px; }
+.header .meta { opacity: 0.85; font-size: 14px; }
+.section { background: #fff; border-radius: 10px; padding: 24px 28px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.section h2 { font-size: 18px; color: #444; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid #eee; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 14px; }
+th { background: #f8f9fc; color: #555; text-align: left; padding: 10px 12px; border-bottom: 2px solid #e9ecf2; }
+td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+tr:hover td { background: #f8faff; }
+.signal-strong-buy { color: #e53e3e; font-weight: bold; }
+.signal-buy { color: #f56565; }
+.signal-hold { color: #d69e2e; }
+.signal-sell { color: #38a169; }
+.signal-strong-sell { color: #276749; font-weight: bold; }
+.advice-content { white-space: pre-wrap; line-height: 1.8; }
+.advice-content h1, .advice-content h2, .advice-content h3 { margin-top: 18px; margin-bottom: 8px; }
+.advice-content ul, .advice-content ol { padding-left: 24px; margin: 8px 0; }
+.advice-content table { margin: 12px 0; }
+.footer { text-align: center; color: #999; font-size: 12px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>组合配置建议报告</h1>
+    <div class="meta">生成时间：2026-07-02 21:48:32 &nbsp;|&nbsp; 持仓标的：2 只 &nbsp;|&nbsp; 模型：claude-opus-4-8</div>
+  </div>
+
+  <div class="section">
+    <h2>持仓概览</h2>
+    <table>
+      <thead>
+        <tr><th>股票代码</th><th>名称</th><th>AI评级</th><th>成本价</th><th>持仓数量</th><th>仓位占比</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>002602.SZ</td><td>世纪华通</td><td class="signal-sell">Sell</td><td>-</td><td>-</td><td>-</td></tr>
+        <tr><td>601138.SS</td><td>工业富联</td><td class="signal-hold">Underweight</td><td>-</td><td>-</td><td>-</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>组合配置建议</h2>
+    <div class="advice-content"><h1>组合配置整体建议报告</h1><br>
+<br>
+<h2>⚠️ 前置数据说明</h2><br>
+<br>
+在给出建议前，必须指出一个<strong>关键数据矛盾</strong>：您提供的持仓状态显示两只标的均为&quot;<strong>未持有</strong>&quot;，但两份AI分析结论均基于&quot;<strong>当前重仓持有</strong>&quot;展开（世纪华通50%仓位、工业富联15%仓位）。<br>
+<br>
+这直接影响操作性质：<br>
+- <strong>若实际未持有</strong>：以下&quot;减仓&quot;建议应理解为&quot;<strong>不建仓/严格观望</strong>&quot;；<br>
+- <strong>若实际持有</strong>：则需立即执行减仓纪律。<br>
+<br>
+<strong>下文以&quot;实际持有&quot;（即分析结论口径）为主场景给出方案，并在末尾标注&quot;未持有&quot;场景的处理方式。请务必先核对真实持仓。</strong><br>
+<br>
+---<br>
+<br>
+<h2>一、整体风险评估</h2><br>
+<br>
+<h3>1. 仓位集中度：极度危险 🔴</h3><br>
+<br>
+| 指标 | 现状 | 评价 |<br>
+|------|------|------|<br>
+| 两标的合计仓位 | <strong>65%</strong>（50%+15%） | 单一方向暴露过高 |<br>
+| 单一最大仓位 | 世纪华通 50% | 严重违反分散化原则 |<br>
+| 日账户波动贡献 | 约 2.5%（华通）+ 0.92%（富联）≈ <strong>3.4%/日</strong> | 波动失控 |<br>
+| 现金/其他仓位 | 仅约 35% | 缓冲垫不足 |<br>
+<br>
+<strong>结论</strong>：当前组合本质上是一个&quot;两只股票的赌注&quot;，其中一只还占据半壁江山。这不是投资组合，而是<strong>集中押注</strong>。<br>
+<br>
+<h3>2. 行业分散度：几乎为零 🔴</h3><br>
+<br>
+- <strong>世纪华通</strong>：游戏/传媒 + AI应用（灵犀互娱、算力概念）<br>
+- <strong>工业富联</strong>：电子制造/AI硬件（服务器、算力基础设施）<br>
+<br>
+两者看似不同行业，但<strong>底层驱动因子高度重叠——均绑定&quot;AI景气度&quot;这一单一宏观叙事</strong>。一旦AI主题降温或情绪逆转，两只标的大概率同向下跌，所谓&quot;分散&quot;是虚假的。<strong>真实相关性远高于表面行业分类。</strong><br>
+<br>
+<h3>3. 综合诊断</h3><br>
+<br>
+&gt; <strong>核心问题：仓位纪律失控 + 伪分散 + 双双技术面承压。</strong><br>
+&gt; 两份分析对基本面均无致命否定（华通基本面甚至强劲），问题100%出在<strong>仓位管理</strong>而非选股。当务之急是把&quot;错误的仓位&quot;纠正到&quot;正确的规模&quot;。<br>
+<br>
+---<br>
+<br>
+<h2>二、建议调仓方案（逐一说明）</h2><br>
+<br>
+<h3>世纪华通 (002602.SZ) — 大幅减仓</h3><br>
+- <strong>操作</strong>：从 50% → <strong>15%</strong>（削减70%敞口）<br>
+- <strong>执行</strong>：分批减仓，优先在催化剂窗口（ChinaJoy/世界杯）反弹时出货<br>
+- <strong>纪律线</strong>：止损设 <strong>12.85元</strong>，最大额外总资产损失控制在 1% 以内<br>
+- <strong>逻辑</strong>：基本面强（净利+447%、PE仅16倍、现金103亿）不支持清仓，但50%仓位是纪律性灾难。保留15%底仓参与估值修复，7月24日重评。<br>
+<br>
+<h3>工业富联 (601138.SS) — 减仓</h3><br>
+- <strong>操作</strong>：从 15% → <strong>8%</strong>（卖出约2100-2300股，保留约3800-4000股）<br>
+- <strong>执行</strong>：<br>
+  - 第一笔：1500股市价立即卖出<br>
+  - 第二笔：600-800股挂限价 <strong>70.3-70.5元</strong>，2日未成交转市价<br>
+- <strong>纪律线</strong>：<strong>69.5元</strong>条件减仓线（连续两日收盘跌破降至5-6%）；<strong>66元</strong>硬止损清仓<br>
+- <strong>逻辑</strong>：15%集中度超标，技术面MACD死叉、RSI&lt;50、下降通道特征明显，毛利率仅7.35%结构性脆弱。<br>
+<br>
+---<br>
+<br>
+<h2>三、执行优先级（按紧迫程度排序）</h2><br>
+<br>
+| 优先级 | 标的 | 动作 | 时间窗口 | 理由 |<br>
+|--------|------|------|----------|------|<br>
+| <strong>🔥 P0 最紧急</strong> | 世纪华通 | 启动减仓至15% | <strong>立即（今日/明日）</strong> | 50%仓位是最大风险源，每日波动2.5%不可容忍 |<br>
+| <strong>🔥 P1 紧急</strong> | 工业富联 | 第一笔1500股市价卖出 | <strong>立即</strong> | 集中度超标+技术破位风险 |<br>
+| <strong>⚡ P2 较急</strong> | 工业富联 | 第二笔限价挂单 | <strong>2日内</strong> | 争取更优价格，超时转市价 |<br>
+| <strong>👁 P3 观察</strong> | 世纪华通剩余15%底仓 | 持有观望 | <strong>至7月24日重评</strong> | 等待催化剂验证 |<br>
+| <strong>👁 P4 观察</strong> | 工业富联剩余8% | 盯盘守纪律线 | 持续 | 破69.5/66即再动作 |<br>
+<br>
+&gt; <strong>核心节奏</strong>：P0、P1 今日必须动手，不等、不赌反弹幅度；P2 给市场2天机会；P3、P4 转入纪律化持有。<br>
+<br>
+---<br>
+<br>
+<h2>四、新增标的建议（分散化方向）</h2><br>
+<br>
+减仓后将释放约 <strong>42% 现金仓位</strong>（原35%现金 + 减仓约27%）。<strong>不建议立即全部再投入</strong>，应分步建立真正分散的组合。建议方向：<br>
+<br>
+<h3>配置框架建议</h3><br>
+| 方向 | 目标配置 | 作用 | 标的思路 |<br>
+|------|----------|------|----------|<br>
+| <strong>防御/红利</strong> | 10-15% | 降低组合Beta，提供现金流 | 银行、公用事业、高股息央企 |<br>
+| <strong>消费/必需</strong> | 8-10% | 与AI叙事负相关或低相关 | 食品饮料、医药消费 |<br>
+| <strong>上游资源</strong> | 5-8% | 对冲通胀、分散科技风险 | 有色、能源 |<br>
+| <strong>保留现金</strong> | 10-15% | 弹药+缓冲垫 | 货币基金/国债逆回购 |<br>
+<br>
+<h3>关键原则</h3><br>
+1. <strong>降低对&quot;AI单一叙事&quot;的依赖</strong>——这是当前组合最大的隐性风险；<br>
+2. <strong>引入低相关或负相关资产</strong>（红利、消费防御）才是真分散；<br>
+3. <strong>分批建仓</strong>，不追高，等待各标的自身信号确认。<br>
+<br>
+---<br>
+<br>
+<h2>五、最终建议仓位汇总表</h2><br>
+<br>
+| 股票 | 当前仓位 | 建议操作 | 目标仓位 | 紧迫度 | 关键纪律线 |<br>
+|------|:--------:|:--------:|:--------:|:------:|-----------|<br>
+| 世纪华通 (002602.SZ) | 50% | <strong>大幅减仓</strong> | <strong>15%</strong> | 🔥 P0 | 止损12.85元 |<br>
+| 工业富联 (601138.SS) | 15% | <strong>减仓</strong> | <strong>8%</strong> | 🔥 P1 | 减仓线69.5 / 止损66 |<br>
+| 现金（缓冲弹药） | 35% | 增加后分步再配 | <strong>10-15%</strong> | — | — |<br>
+| 红利/防御（新增） | 0% | 分批建仓 | <strong>10-15%</strong> | P3+ | 待选 |<br>
+| 消费/必需（新增） | 0% | 分批建仓 | <strong>8-10%</strong> | P3+ | 待选 |<br>
+| 上游资源（新增） | 0% | 分批建仓 | <strong>5-8%</strong> | P3+ | 待选 |<br>
+| <strong>合计</strong> | 100% | — | <strong>≈100%</strong> | — | — |<br>
+<br>
+---<br>
+<br>
+<h2>📌 总结与核心提醒</h2><br>
+<br>
+1. <strong>首要动作是&quot;减集中度&quot;，不是&quot;看空基本面&quot;</strong>。华通基本面强劲，问题在50%的仓位；富联问题在15%的超配。两者均属&quot;好判断、错仓位&quot;。<br>
+2. <strong>调仓后单一标的上限建议15%，同一叙事（AI）合计敞口建议不超过25%</strong>。当前65%严重超标。<br>
+3. <strong>务必先核对真实持仓</strong>：若实际&quot;未持有&quot;，则以上减仓改为&quot;<strong>观望不建仓</strong>&quot;，直接从第四部分的分散化框架开始建仓，且华通/富联在当前评级（Sell/Underweight）下<strong>不纳入新建仓名单</strong>。<br>
+<br>
+&gt; ⚠️ 本建议基于所提供AI分析结论整理，纪律线为机械执行标准。请在7月24日按华通重评节点、以及富联纪律线触发情况动态调整。</div>
+  </div>
+
+  <div class="footer">
+    <p>本报告由 TradingAgents AI 系统自动生成，仅供参考，不构成投资建议。</p>
+  </div>
+</div>
+</body>
+</html>

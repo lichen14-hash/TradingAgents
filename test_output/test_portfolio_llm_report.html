@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>组合配置建议报告</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f5f7fa; color: #333; line-height: 1.7; }
+.container { max-width: 900px; margin: 0 auto; padding: 30px 20px; }
+.header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; padding: 40px 30px; border-radius: 12px; margin-bottom: 30px; }
+.header h1 { font-size: 26px; margin-bottom: 8px; }
+.header .meta { opacity: 0.85; font-size: 14px; }
+.section { background: #fff; border-radius: 10px; padding: 24px 28px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.section h2 { font-size: 18px; color: #444; margin-bottom: 16px; padding-bottom: 10px; border-bottom: 2px solid #eee; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 14px; }
+th { background: #f8f9fc; color: #555; text-align: left; padding: 10px 12px; border-bottom: 2px solid #e9ecf2; }
+td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+tr:hover td { background: #f8faff; }
+.signal-strong-buy { color: #e53e3e; font-weight: bold; }
+.signal-buy { color: #f56565; }
+.signal-hold { color: #d69e2e; }
+.signal-sell { color: #38a169; }
+.signal-strong-sell { color: #276749; font-weight: bold; }
+.advice-content { white-space: pre-wrap; line-height: 1.8; }
+.advice-content h1, .advice-content h2, .advice-content h3 { margin-top: 18px; margin-bottom: 8px; }
+.advice-content ul, .advice-content ol { padding-left: 24px; margin: 8px 0; }
+.advice-content table { margin: 12px 0; }
+.footer { text-align: center; color: #999; font-size: 12px; margin-top: 30px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>组合配置建议报告</h1>
+    <div class="meta">生成时间：2026-07-02 21:26:51 &nbsp;|&nbsp; 持仓标的：2 只 &nbsp;|&nbsp; 模型：claude-opus-4-8</div>
+  </div>
+
+  <div class="section">
+    <h2>持仓概览</h2>
+    <table>
+      <thead>
+        <tr><th>股票代码</th><th>名称</th><th>AI评级</th><th>成本价</th><th>持仓数量</th><th>仓位占比</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>09988.HK</td><td>阿里巴巴</td><td class="signal-buy">Buy</td><td>120</td><td>500</td><td>10%</td></tr>
+        <tr><td>515880.SS</td><td>通信ETF</td><td class="signal-hold">Hold</td><td>1.12</td><td>5000</td><td>15%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>组合配置建议</h2>
+    <div class="advice-content"><h1>组合配置建议</h1><br>
+<br>
+<strong>当前股票仓位合计25%，现金充裕，可适度加仓。</strong><br>
+<br>
+- <strong>阿里巴巴（Buy）</strong>：底部确认+基本面改善，建议逢低加仓至<strong>15%</strong>。<br>
+- <strong>通信ETF（Hold）</strong>：短期承压，维持<strong>15%</strong>观望，不追高。<br>
+<br>
+<strong>风险提示</strong>：两者均含AI算力主题，相关性偏高，建议单一方向敞口控制在30%以内，其余配置低相关资产以分散风险。</div>
+  </div>
+
+  <div class="footer">
+    <p>本报告由 TradingAgents AI 系统自动生成，仅供参考，不构成投资建议。</p>
+  </div>
+</div>
+</body>
+</html>

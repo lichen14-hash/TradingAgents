@@ -1,0 +1,8 @@
+﻿id,5921428
+apiKey,sk-ws-H.RXHDLHY.XcRG.MEUCIQCn_BbcgLkTx8JFYlIt-OikkudF0kxKf5vYUKW-9lfY2AIgDn1AzBIffB553n_4ZP7TJ6_gWxuP2JXrewv--kUC51I
+apiHost,llm-6yddktmbnt0efq09.cn-beijing.maas.aliyuncs.com
+openAiCompatible,https://llm-6yddktmbnt0efq09.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+dashScope,https://llm-6yddktmbnt0efq09.cn-beijing.maas.aliyuncs.com/api/v1
+description,自研引擎QA
+workspaceName,主账号空间
+workspaceId,llm-6yddktmbnt0efq09

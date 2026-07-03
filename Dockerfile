@@ -18,11 +18,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN useradd --create-home appuser \
- && install -d -m 0755 -o appuser -g appuser /home/appuser/.tradingagents
+RUN useradd --create-home appuser
 USER appuser
 WORKDIR /home/appuser/app
 
 COPY --from=builder --chown=appuser:appuser /build .
+
+# local_data lives inside the app directory (created at runtime if missing)
+RUN install -d -m 0755 local_data
 
 ENTRYPOINT ["tradingagents"]

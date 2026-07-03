@@ -220,7 +220,12 @@ __marimo__/
 skill_output/
 
 # Test output
-test_output/
+# test_output/
+
+# Local data (backtest.db, cache, memory, logs)
+# IMPORTANT: This directory contains core data (predictions, trading memory).
+# NOT tracked by git but MUST be copied when migrating to a new machine.
+# local_data/
 
 # Enterprise env file (secrets) and generated run reports
 .env.enterprise

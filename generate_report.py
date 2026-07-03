@@ -321,8 +321,11 @@ tr:hover td {{ background: rgba(108,138,255,.04); }}
 
 
 if __name__ == "__main__":
-    src = r"C:\Users\ejoy\.tradingagents\logs\BABA\TradingAgentsStrategy_logs\full_states_log_2026-06-20.json"
-    dst = r"C:\Users\ejoy\.tradingagents\logs\BABA\TradingAgentsStrategy_logs\BABA_report_2026-06-20.html"
+    import os
+    from tradingagents.default_config import DEFAULT_CONFIG
+    logs_dir = DEFAULT_CONFIG["results_dir"]
+    src = os.path.join(logs_dir, "BABA", "TradingAgentsStrategy_logs", "full_states_log_2026-06-20.json")
+    dst = os.path.join(logs_dir, "BABA", "TradingAgentsStrategy_logs", "BABA_report_2026-06-20.html")
 
     with open(src, "r", encoding="utf-8") as f:
         data = json.load(f)
