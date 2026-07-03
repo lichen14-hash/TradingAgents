@@ -47,11 +47,14 @@ _QWEN_MODELS: dict[str, list[ModelOption]] = {
     "quick": [
         ("Qwen 3.7 Plus - Latest, balanced speed/cost", "qwen3.7-plus"),
         ("Qwen 3.6 Plus - Previous-gen balanced", "qwen3.6-plus"),
+        ("qwen-plus - Auto-upgrading alias (latest Plus)", "qwen-plus"),
+        ("qwen-turbo - Auto-upgrading alias (fastest)", "qwen-turbo"),
         ("Custom model ID", "custom"),
     ],
     "deep": [
         ("Qwen 3.7 Max - Latest flagship, most intelligent, 1M ctx", "qwen3.7-max"),
         ("Qwen 3.6 Max - Previous-gen flagship", "qwen3.6-max"),
+        ("qwen-max - Auto-upgrading alias (latest Max)", "qwen-max"),
         ("Qwen 3.7 Plus - Balanced alternative", "qwen3.7-plus"),
         ("Custom model ID", "custom"),
     ],

@@ -44,7 +44,7 @@ scripts/
 
 ## 数据库设计
 
-数据库路径：`~/.tradingagents/backtest.db`
+数据库路径：`local_data/backtest.db`
 环境变量覆盖：`TRADINGAGENTS_BACKTEST_DB`
 
 ### predictions 表
@@ -86,7 +86,7 @@ scripts/
 
 | 配置键 | 环境变量 | 默认值 | 说明 |
 |--------|---------|--------|------|
-| `backtest_db_path` | `TRADINGAGENTS_BACKTEST_DB` | `~/.tradingagents/backtest.db` | 数据库文件路径 |
+| `backtest_db_path` | `TRADINGAGENTS_BACKTEST_DB` | `local_data/backtest.db` | 数据库文件路径 |
 | `backtest_holding_days` | — | `5` | 持仓天数（结算时用） |
 | `backtest_direction_threshold` | — | `0.02` | Hold 信号正确性阈值（2%） |
 | `backtest_feedback_enabled` | — | `False` | 总开关：历史正确性是否参与新分析 |

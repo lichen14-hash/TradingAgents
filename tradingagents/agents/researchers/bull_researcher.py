@@ -28,7 +28,7 @@ def create_bull_researcher(llm):
 
 Key points to focus on:
 - Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Moat (MUST be specific): Do NOT merely state the company "has a moat" or "strong technology". You MUST explain:
+- Competitive Moat (be specific, but keep proportional — ~25% of your argument): Do NOT merely state the company "has a moat" or "strong technology". You MUST explain:
   (a) What exact core technologies or proprietary processes give the company an edge? Name them specifically.
   (b) Why can't competitors replicate these? What are the concrete barriers (years of R&D, specific patents, process know-how, certification requirements, customer co-development)?
   (c) What switching costs lock in customers? (e.g., custom integration, qualification cycles, supply chain dependencies)

@@ -47,6 +47,7 @@ class FundamentalsData(BaseModel):
     cashflow_annual: str = ""
     income_quarterly: str = ""
     income_annual: str = ""
+    competitive_intelligence: str = ""
 
 
 class DataBundle(BaseModel):

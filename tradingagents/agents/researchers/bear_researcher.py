@@ -29,7 +29,7 @@ def create_bear_researcher(llm):
 Key points to focus on:
 
 - Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Moat Skepticism (MUST be specific): Do NOT accept vague claims of "strong technology" or "industry leader" at face value. You MUST critically examine:
+- Competitive Moat Skepticism (be specific, but keep proportional — ~25% of your argument): Do NOT accept vague claims of "strong technology" or "industry leader" at face value. You MUST critically examine:
   (a) Are the claimed core technologies truly proprietary, or are they industry-standard processes that competitors also possess?
   (b) Name specific competitors who are catching up or have comparable capabilities. What is their market share trajectory?
   (c) Are switching costs real and quantifiable, or are they overstated? Can customers dual-source or substitute?

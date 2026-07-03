@@ -13,6 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.competitive_intel import get_competitive_intelligence
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
@@ -422,6 +423,13 @@ class DataCollector:
             route_to_vendor, "get_income_statement", ticker, "annual", trade_date,
         )
 
+        # Competitive intelligence via web search
+        company_name = self._extract_company_name(overview)
+        comp_intel = _safe_call(
+            "fundamentals:competitive_intelligence",
+            get_competitive_intelligence, ticker, company_name, trade_date,
+        )
+
         return FundamentalsData(
             overview=overview,
             balance_sheet_quarterly=bs_q,
@@ -430,14 +438,32 @@ class DataCollector:
             cashflow_annual=cf_a,
             income_quarterly=inc_q,
             income_annual=inc_a,
+            competitive_intelligence=comp_intel,
         )
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_company_name(overview: str) -> str:
+        """Try to extract company name from the overview JSON or text."""
+        if not overview or overview.startswith(_UNAVAILABLE_PREFIX):
+            return ""
+        try:
+            import json as _json
+            data = _json.loads(overview)
+            # AKShare stock_individual_info_em returns keys like "股票简称", "公司名称"
+            for key in ("股票简称", "公司名称", "name", "Name", "shortName"):
+                if key in data and data[key]:
+                    return str(data[key]).strip()
+        except (ValueError, TypeError):
+            pass
+        return ""
+
     def _default_save_path(self, ticker: str, trade_date: str) -> Path:
-        data_dir = Path(self.config.get("data_dir", os.path.expanduser("~/.tradingagents/data")))
+        from tradingagents.default_config import DEFAULT_CONFIG
+        data_dir = Path(self.config.get("data_dir", DEFAULT_CONFIG["data_dir"]))
         safe_ticker = safe_ticker_component(ticker)
         return data_dir / safe_ticker / self._filename(ticker, trade_date)
 
