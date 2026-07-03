@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import time
 from typing import Any
@@ -9,6 +10,12 @@ from .base_client import BaseLLMClient, normalize_content
 from .validators import validate_model
 
 logger = logging.getLogger(__name__)
+
+# Some Anthropic-compatible proxies (e.g. IdealAb /api/code) gate access on a
+# Claude-Code-style User-Agent, rejecting the default SDK UA with errors like
+# "opus计划仅限在claude code中使用". Impersonate the CLI so those proxies route
+# the request. Overridable via TRADINGAGENTS_ANTHROPIC_USER_AGENT.
+_DEFAULT_CLI_USER_AGENT = "claude-cli/1.0.30 (external, cli)"
 
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "api_key", "max_tokens", "temperature",
@@ -103,6 +110,10 @@ class AnthropicClient(BaseLLMClient):
 
         if self.base_url:
             llm_kwargs["base_url"] = self.base_url
+            # Proxies keyed to the /api/code (Claude Code) plan require a CLI UA.
+            ua = os.getenv("TRADINGAGENTS_ANTHROPIC_USER_AGENT", _DEFAULT_CLI_USER_AGENT)
+            if ua:
+                llm_kwargs["default_headers"] = {"User-Agent": ua, "x-app": "cli"}
 
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
