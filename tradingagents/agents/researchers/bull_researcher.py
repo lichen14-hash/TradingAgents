@@ -28,7 +28,11 @@ def create_bull_researcher(llm):
 
 Key points to focus on:
 - Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
+- Competitive Moat (MUST be specific): Do NOT merely state the company "has a moat" or "strong technology". You MUST explain:
+  (a) What exact core technologies or proprietary processes give the company an edge? Name them specifically.
+  (b) Why can't competitors replicate these? What are the concrete barriers (years of R&D, specific patents, process know-how, certification requirements, customer co-development)?
+  (c) What switching costs lock in customers? (e.g., custom integration, qualification cycles, supply chain dependencies)
+  (d) Provide market share data or ranking if available.
 - Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
 - Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
 - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.

@@ -69,9 +69,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
               display: flex; align-items: center; justify-content: center; font-size: 12px;
               flex-shrink: 0; }
 .batch-item.pending .batch-icon { border-color: #ddd; }
-.batch-item.active .batch-icon { border-color: #667eea; animation: pulse 1.2s infinite; }
+.batch-item.active .batch-icon { border-color: #667eea; animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .batch-item.done .batch-icon { background: #28a745; border-color: #28a745; color: white; }
 .batch-item.failed .batch-icon { background: #dc3545; border-color: #dc3545; color: white; }
+.batch-item.cancelled .batch-icon { background: #6c757d; border-color: #6c757d; color: white; }
 .batch-item-info { flex: 1; }
 .batch-item-name { font-weight: 600; }
 .batch-item-stage { font-size: 12px; color: #999; margin-top: 2px; }
@@ -81,6 +83,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .batch-item-signal.hold { background: #fff8e1; color: #f59e0b; }
 .batch-item-actions a { font-size: 13px; color: #667eea; text-decoration: none; margin-left: 8px; }
 .batch-item-actions a:hover { text-decoration: underline; }
+.batch-advice-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #eee; }
+.btn-portfolio-advice { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;
+  border: none; padding: 10px 20px; border-radius: 8px; font-size: 14px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.2s; }
+.btn-portfolio-advice:hover { opacity: 0.9; }
+.btn-portfolio-advice:disabled { opacity: 0.5; cursor: not-allowed; }
+.portfolio-advice-link { font-size: 14px; color: #667eea; text-decoration: none; font-weight: 600; }
+.portfolio-advice-link:hover { text-decoration: underline; }
+.portfolio-advice-status { font-size: 13px; color: #999; }
 
 /* Result section */
 .result-card { background: white; border-radius: 12px; padding: 28px;
@@ -153,6 +164,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
                     cursor: pointer; transition: opacity 0.2s; }
 .btn-batch-submit:hover { opacity: 0.9; }
 .btn-batch-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* File upload area */
+.upload-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.btn-upload { padding: 8px 20px; background: #f0f2f8; color: #667eea; border: 2px solid #667eea;
+              border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+.btn-upload:hover { background: #667eea; color: white; }
+.upload-link { font-size: 13px; color: #667eea; text-decoration: none; }
+.upload-link:hover { text-decoration: underline; }
+.upload-hint { font-size: 12px; color: #999; }
+.upload-errors { margin-top: 8px; padding: 10px 14px; background: #fff3f3; border-radius: 8px;
+                 font-size: 13px; color: #dc3545; display: none; }
+.upload-errors.active { display: block; }
 </style>
 </head>
 <body>
@@ -195,9 +218,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
         <input type="number" id="positionPct" step="0.1" min="0" max="100" placeholder="如 20">
       </div>
     </div>
+    <div class="upload-row">
+      <button class="btn-upload" onclick="document.getElementById('fileUpload').click()">导入持仓文件</button>
+      <input type="file" id="fileUpload" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleFileUpload(this)">
+      <a href="/api/template/portfolio" class="upload-link" download>下载模板</a>
+      <span class="upload-hint">支持 .xlsx / .csv，列名：股票代码、成本价、持仓数量、仓位占比</span>
+    </div>
+    <div class="upload-errors" id="uploadErrors"></div>
   </div>
 
-  <!-- Batch position input -->
+  <!-- Batch position input (from manual entry or file upload) -->
   <div class="batch-position-card" id="batchPositionCard">
     <div class="batch-position-title">持仓信息录入（选填，不填表示未持有）</div>
     <table class="batch-position-table">
@@ -211,6 +241,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <div class="batch-card" id="batchCard">
     <div class="batch-title" id="batchTitle">批量分析进度</div>
     <ul class="batch-list" id="batchList"></ul>
+    <div class="batch-advice-row" id="batchAdviceRow" style="display:none">
+      <button class="btn-portfolio-advice" id="btnPortfolioAdvice" onclick="generatePortfolioAdvice()">生成组合建议</button>
+      <span class="portfolio-advice-status" id="portfolioAdviceStatus"></span>
+    </div>
   </div>
 
   <!-- Single-task Progress -->
@@ -302,6 +336,76 @@ function getPositionInfo() {
     shares: sh ? parseFloat(sh) : null,
     position_pct: pp ? parseFloat(pp) : null,
   };
+}
+
+// ========== File upload ==========
+
+let _uploadedRows = null;
+
+async function handleFileUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';  // reset so same file can be re-selected
+
+  const errBox = document.getElementById('uploadErrors');
+  errBox.classList.remove('active');
+  errBox.textContent = '';
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const resp = await fetch('/api/upload/portfolio', { method: 'POST', body: formData });
+    if (!resp.ok) {
+      const err = await resp.json();
+      errBox.textContent = err.detail || '文件解析失败';
+      errBox.classList.add('active');
+      return;
+    }
+    const data = await resp.json();
+
+    if (data.errors && data.errors.length) {
+      errBox.innerHTML = data.errors.map(e => esc(e)).join('<br>');
+      errBox.classList.add('active');
+    }
+
+    if (!data.rows || data.rows.length === 0) {
+      if (!data.errors || !data.errors.length) {
+        errBox.textContent = '文件中没有有效数据行';
+        errBox.classList.add('active');
+      }
+      return;
+    }
+
+    _uploadedRows = data.rows;
+    showUploadPreview(data.rows);
+  } catch (e) {
+    errBox.textContent = '上传失败: ' + e.message;
+    errBox.classList.add('active');
+  }
+}
+
+function showUploadPreview(rows) {
+  const card = document.getElementById('batchPositionCard');
+  card.classList.add('active');
+  document.getElementById('progressCard').classList.remove('active');
+  document.getElementById('resultCard').classList.remove('active');
+
+  const titleEl = card.querySelector('.batch-position-title');
+  titleEl.textContent = `持仓文件预览（共 ${rows.length} 只股票，确认后开始分析）`;
+
+  const tbody = document.getElementById('batchPositionBody');
+  tbody.innerHTML = rows.map((r, i) => `
+    <tr data-ticker="${esc(r.ticker)}">
+      <td>${esc(r.name || r.ticker)}</td>
+      <td><input type="number" step="0.01" min="0" value="${r.cost_price != null ? r.cost_price : ''}" id="bp-cost-${i}"></td>
+      <td><input type="number" step="1" min="0" value="${r.shares != null ? r.shares : ''}" id="bp-shares-${i}"></td>
+      <td><input type="number" step="0.1" min="0" max="100" value="${r.position_pct != null ? r.position_pct : ''}" id="bp-pct-${i}"></td>
+    </tr>
+  `).join('');
+
+  card._tickers = rows.map(r => r.ticker);
+  card._fromUpload = true;
 }
 
 // ========== Single-task analysis ==========
@@ -612,12 +716,9 @@ function startBatchPolling(batchId) {
       const data = await resp.json();
       updateBatchUI(data);
 
-      // Connect SSE to ALL active tasks for real-time updates
-      for (const t of data.tasks) {
-        if (t.status !== 'done' && t.status !== 'failed' && t.status !== 'pending' && t.status !== 'cancelled') {
-          _connectSSE(t.task_id);
-        }
-      }
+      // No individual SSE connections for batch tasks to avoid
+      // exceeding browser's per-domain connection limit (6 for HTTP/1.1).
+      // Rely on polling for progress updates instead.
 
       if (data.done >= data.total) {
         clearInterval(batchPollTimer);
@@ -626,6 +727,13 @@ function startBatchPolling(batchId) {
         document.getElementById('btnAnalyze').disabled = false;
         document.getElementById('btnAnalyze').textContent = '开始分析';
         loadHistory();
+        // Show portfolio advice button if there are successful tasks
+        const doneCount = data.tasks.filter(t => t.status === 'done').length;
+        if (doneCount >= 2) {
+          document.getElementById('batchAdviceRow').style.display = 'flex';
+          document.getElementById('btnPortfolioAdvice').disabled = false;
+          document.getElementById('portfolioAdviceStatus').textContent = '';
+        }
       }
     } catch (e) {
       console.error('Batch poll error:', e);
@@ -640,9 +748,15 @@ function updateBatchUI(data) {
   const title = document.getElementById('batchTitle');
   const doneCount = data.tasks.filter(t => t.status === 'done').length;
   const failCount = data.tasks.filter(t => t.status === 'failed').length;
+  const cancelCount = data.tasks.filter(t => t.status === 'cancelled').length;
   let titleText = `批量分析进度 (${doneCount}/${data.total} 完成)`;
   if (failCount > 0) titleText += ` · ${failCount} 失败`;
-  if (data.done >= data.total) titleText = `批量分析完成 (${doneCount}/${data.total})`;
+  if (cancelCount > 0) titleText += ` · ${cancelCount} 已取消`;
+  if (data.done >= data.total) {
+    if (failCount > 0) titleText = `批量分析已取消 (数据源异常)`;
+    else if (cancelCount > 0) titleText = `批量分析已取消 (用户取消)`;
+    else titleText = `批量分析完成 (${doneCount}/${data.total})`;
+  }
   title.textContent = titleText;
 
   for (const t of data.tasks) {
@@ -667,22 +781,33 @@ function updateBatchUI(data) {
     } else if (t.status === 'failed') {
       cls += 'failed';
       icon = '✗';
-      stageText = '失败';
+      stageText = t.error || '失败';
+    } else if (t.status === 'cancelled') {
+      cls += 'cancelled';
+      icon = '–';
+      stageText = t.error || '已取消';
     } else if (t.status === 'pending') {
       cls += 'pending';
       stageText = '等待中';
     } else {
       cls += 'active';
+      icon = '◔';
       stageText = t.stage_message || '分析中';
     }
 
     el.className = cls;
     el.querySelector('.batch-icon').innerHTML = icon;
 
-    // Preserve SSE-updated stage text for active tasks
-    if (t.status !== 'pending' || !el.querySelector('.batch-item-stage').textContent) {
-      if (t.status === 'done' || t.status === 'failed' || t.status === 'pending') {
-        el.querySelector('.batch-item-stage').textContent = stageText;
+    // Update stage text for all statuses
+    const stageDiv = el.querySelector('.batch-item-stage');
+    if (stageDiv) {
+      if (t.status === 'done' || t.status === 'failed' || t.status === 'cancelled' || t.status === 'pending') {
+        stageDiv.textContent = stageText;
+      } else if (t.stage_message) {
+        // For active tasks, update from poll if SSE hasn't delivered yet or poll has newer info
+        stageDiv.textContent = t.stage_message;
+      } else if (stageDiv.textContent === '等待中') {
+        stageDiv.textContent = stageText;
       }
     }
 
@@ -696,6 +821,58 @@ function updateBatchUI(data) {
       }
       extraContainer.innerHTML = extra;
     }
+  }
+}
+
+// ========== Portfolio Advice ==========
+
+async function generatePortfolioAdviceForBatch(batchId) {
+  if (!batchId) return;
+  const statusEl = document.getElementById(`advice-status-${batchId}`);
+  const btn = statusEl?.previousElementSibling;
+  if (btn) { btn.disabled = true; btn.textContent = '生成中...'; }
+  if (statusEl) statusEl.textContent = '正在调用AI组合经理分析，请稍候...';
+  try {
+    const resp = await fetch(`/api/batch/${batchId}/portfolio-advice`, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `请求失败 (${resp.status})`);
+    }
+    const data = await resp.json();
+    if (btn) btn.style.display = 'none';
+    let links = `<a href="${data.report_url}" target="_blank" class="portfolio-advice-link">查看组合建议报告</a>`;
+    if (data.pdf_url) links += ` <a href="${data.pdf_url}" download class="portfolio-advice-link" style="margin-left:12px">下载PDF</a>`;
+    if (statusEl) statusEl.innerHTML = links;
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = '生成组合建议'; }
+    if (statusEl) statusEl.textContent = `失败: ${e.message}`;
+  }
+}
+
+async function generatePortfolioAdvice() {
+  if (!currentBatchId) return;
+  const btn = document.getElementById('btnPortfolioAdvice');
+  const status = document.getElementById('portfolioAdviceStatus');
+  btn.disabled = true;
+  btn.textContent = '生成中...';
+  status.textContent = '正在调用AI组合经理分析，请稍候...';
+  try {
+    const resp = await fetch(`/api/batch/${currentBatchId}/portfolio-advice`, { method: 'POST' });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `请求失败 (${resp.status})`);
+    }
+    const data = await resp.json();
+    btn.textContent = '生成组合建议';
+    btn.disabled = false;
+    let adviceLinks = `<a href="${data.report_url}" target="_blank" class="portfolio-advice-link">查看组合建议报告</a>`;
+    if (data.pdf_url) adviceLinks += ` <a href="${data.pdf_url}" download class="portfolio-advice-link" style="margin-left:12px">下载PDF</a>`;
+    status.innerHTML = adviceLinks;
+  } catch (e) {
+    btn.textContent = '重试生成';
+    btn.disabled = false;
+    status.textContent = '失败: ' + e.message;
+    status.style.color = '#dc3545';
   }
 }
 
@@ -736,10 +913,17 @@ async function loadHistory() {
     for (const bid of groups) {
       const items = batchMap[bid];
       const groupTime = items[0]?.created_at || '';
+      const doneCount = items.filter(t => t.status === 'done').length;
       html += `<div class="history-batch-group">`;
       html += `<div class="history-batch-header">批量分析 (${esc(groupTime)})</div>`;
       for (const t of items) {
         html += renderHistoryItem(t);
+      }
+      if (doneCount >= 2) {
+        html += `<div class="batch-advice-row">
+          <button class="btn-portfolio-advice" onclick="generatePortfolioAdviceForBatch('${bid}')">生成组合建议</button>
+          <span class="portfolio-advice-status" id="advice-status-${bid}"></span>
+        </div>`;
       }
       html += `</div>`;
     }

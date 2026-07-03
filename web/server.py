@@ -10,12 +10,13 @@ import subprocess
 import sys
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -80,7 +81,7 @@ _tasks_lock = threading.Lock()
 # Concurrent work pool (max 5 parallel analyses)
 # ---------------------------------------------------------------------------
 
-_MAX_CONCURRENT_ANALYSES = 5
+_MAX_CONCURRENT_ANALYSES = 10
 _work_queue: _queue_mod.Queue[str] = _queue_mod.Queue()
 
 
@@ -276,50 +277,59 @@ def _check_cancelled(task: TaskInfo):
         raise _TaskCancelled(f"{task.ticker} 任务已被用户取消")
 
 
-def _run_analysis(task: TaskInfo):
-    """Run the full analysis pipeline in a background thread."""
-    try:
-        name = task.name if task.name != task.ticker else _resolve_name(task.ticker)
-        task.name = name
-        _emit(task, "init", f"开始分析 {name} ({task.ticker})")
+def _collect_data(task: TaskInfo):
+    """Phase 1: Data collection + completeness validation. Returns bundle on success."""
+    name = task.name if task.name != task.ticker else _resolve_name(task.ticker)
+    task.name = name
+    _emit(task, "init", f"开始分析 {name} ({task.ticker})")
 
-        from tradingagents.datacollector import DataCollector
-        from tradingagents.datacollector.collector import (
-            DataIncompleteError,
-            validate_bundle_completeness,
-        )
+    from tradingagents.datacollector import DataCollector
+    from tradingagents.datacollector.collector import (
+        DataIncompleteError,
+        validate_bundle_completeness,
+    )
+    from tradingagents.dataflows.config import set_config
+
+    config = _make_config()
+    set_config(config)
+    analysts = _get_analysts(task.ticker)
+
+    _check_cancelled(task)
+
+    task.status = "collecting"
+    _emit(task, "collecting", "正在采集市场数据...")
+    collector = DataCollector(config)
+    bundle, filepath = collector.collect_and_save(
+        task.ticker, task.date,
+        selected_analysts=analysts,
+        save_dir=OUTPUT_DIR,
+    )
+    _emit(task, "data_ready", "数据采集完成")
+
+    _check_cancelled(task)
+
+    # Data completeness validation
+    issues = validate_bundle_completeness(bundle)
+    if issues:
+        summary_lines = [f"  - {i['category']}/{i['field']}: {i['reason'][:80]}" for i in issues[:10]]
+        if len(issues) > 10:
+            summary_lines.append(f"  ... 等共 {len(issues)} 项")
+        detail = "\n".join(summary_lines)
+        logger.warning("Data incomplete for %s, aborting analysis:\n%s", task.ticker, detail)
+        raise DataIncompleteError(issues)
+
+    return bundle
+
+
+def _run_llm_analysis(task: TaskInfo, bundle):
+    """Phase 2: LLM analysis via graph streaming + report generation."""
+    try:
         from tradingagents.dataflows.config import set_config
 
         config = _make_config()
         set_config(config)
         analysts = _get_analysts(task.ticker)
 
-        _check_cancelled(task)
-
-        # Phase 1: Data collection
-        task.status = "collecting"
-        _emit(task, "collecting", "正在采集市场数据...")
-        collector = DataCollector(config)
-        bundle, filepath = collector.collect_and_save(
-            task.ticker, task.date,
-            selected_analysts=analysts,
-            save_dir=OUTPUT_DIR,
-        )
-        _emit(task, "data_ready", "数据采集完成")
-
-        _check_cancelled(task)
-
-        # Phase 1.5: Data completeness validation
-        issues = validate_bundle_completeness(bundle)
-        if issues:
-            summary_lines = [f"  - {i['category']}/{i['field']}: {i['reason'][:80]}" for i in issues[:10]]
-            if len(issues) > 10:
-                summary_lines.append(f"  ... 等共 {len(issues)} 项")
-            detail = "\n".join(summary_lines)
-            logger.warning("Data incomplete for %s, aborting analysis:\n%s", task.ticker, detail)
-            raise DataIncompleteError(issues)
-
-        # Phase 2: LLM analysis via graph streaming
         task.status = "analyzing"
         _emit(task, "analyzing", "正在启动 AI 分析...")
 
@@ -455,6 +465,87 @@ def _run_analysis(task: TaskInfo):
         _emit(task, "error", f"分析失败: {e}")
 
 
+def _run_analysis(task: TaskInfo):
+    """Run the full analysis pipeline (single-stock, used by work queue)."""
+    try:
+        bundle = _collect_data(task)
+        _run_llm_analysis(task, bundle)
+    except _TaskCancelled:
+        task.status = "cancelled"
+        _emit(task, "cancelled", f"{task.ticker} 分析已取消")
+    except Exception as e:
+        logger.exception("Analysis failed for %s", task.ticker)
+        task.status = "failed"
+        task.error = str(e)
+        _emit(task, "error", f"分析失败: {e}")
+
+
+def _cancel_remaining(batch_id: str, task_ids: list[str], failed_tid: str, reason: str):
+    """Mark remaining tasks as cancelled when one collection fails."""
+    failed_task = tasks.get(failed_tid)
+    if failed_task:
+        failed_task.status = "failed"
+        failed_task.error = reason
+        _emit(failed_task, "error", f"数据采集失败: {reason}")
+
+    for tid in task_ids:
+        if tid == failed_tid:
+            continue
+        t = tasks.get(tid)
+        if t and t.status not in ("done", "failed"):
+            t.status = "cancelled"
+            t.error = f"批量任务已取消（{failed_task.ticker if failed_task else ''} 数据源异常）"
+            _emit(t, "cancelled", t.error)
+
+    logger.warning(
+        "Batch %s cancelled: %s failed data collection (%s)",
+        batch_id, failed_tid, reason,
+    )
+
+
+def _run_batch(batch_id: str, task_ids: list[str]):
+    """两阶段批量执行：先全部采集，再全部分析。"""
+    # 阶段1：并发采集所有股票数据
+    bundles: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
+        futures = {pool.submit(_collect_data, tasks[tid]): tid for tid in task_ids}
+        for future in as_completed(futures):
+            tid = futures[future]
+            try:
+                bundles[tid] = future.result()
+            except _TaskCancelled:
+                # 用户主动取消，静默终止剩余任务
+                for f in futures:
+                    f.cancel()
+                task = tasks.get(tid)
+                if task:
+                    task.status = "cancelled"
+                    _emit(task, "cancelled", f"{task.ticker} 已被用户取消")
+                for other_tid in task_ids:
+                    if other_tid == tid:
+                        continue
+                    t = tasks.get(other_tid)
+                    if t and t.status not in ("done", "failed", "cancelled"):
+                        t.status = "cancelled"
+                        _emit(t, "cancelled", "用户取消了批量任务")
+                return
+            except Exception as exc:
+                # 某只采集失败 → 取消整批剩余任务
+                for f in futures:
+                    f.cancel()
+                _cancel_remaining(batch_id, task_ids, failed_tid=tid, reason=str(exc))
+                return
+
+    logger.info("Batch %s: all %d collections succeeded, starting LLM analysis", batch_id, len(task_ids))
+
+    # 阶段2：全部采集成功，并发LLM分析
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
+        futures = [pool.submit(_run_llm_analysis, tasks[tid], bundles[tid]) for tid in task_ids]
+        # 等待所有分析完成（各自处理异常）
+        for f in futures:
+            f.result()  # propagate won't crash; _run_llm_analysis catches internally
+
+
 def _convert_to_pdf(html_path: str, pdf_path: str):
     """Convert HTML to PDF via Chrome headless."""
     chrome_paths = [
@@ -564,12 +655,146 @@ def _scan_history():
             pdf_path=str(pdf),
             created_at=datetime.fromtimestamp(pdf.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
         )
+        t._mtime = pdf.stat().st_mtime  # temporary for batch grouping
         tasks[task_id] = t
+
+    # Group historical tasks with close creation times into synthetic batches
+    hist_tasks = [(tid, t) for tid, t in tasks.items() if tid.startswith("hist-") and hasattr(t, '_mtime')]
+    hist_tasks.sort(key=lambda x: x[1]._mtime)
+    BATCH_WINDOW = 120  # seconds
+    batch_groups: list[list[str]] = []
+    current_group: list[str] = []
+    last_mtime = 0.0
+    for tid, t in hist_tasks:
+        if current_group and (t._mtime - last_mtime > BATCH_WINDOW):
+            if len(current_group) >= 2:
+                batch_groups.append(current_group)
+            current_group = []
+        current_group.append(tid)
+        last_mtime = t._mtime
+    if len(current_group) >= 2:
+        batch_groups.append(current_group)
+
+    for group in batch_groups:
+        bid = uuid.uuid4().hex[:12]
+        for tid in group:
+            tasks[tid].batch_id = bid
+        batches[bid] = BatchInfo(batch_id=bid, task_ids=group)
+
+    # Cleanup temp attr
+    for tid, t in tasks.items():
+        if hasattr(t, '_mtime'):
+            del t._mtime
 
 
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Portfolio file upload & template download
+# ---------------------------------------------------------------------------
+
+_UPLOAD_MAX_ROWS = 20
+_EXPECTED_COLUMNS = {"股票代码": "ticker", "成本价": "cost_price", "持仓数量": "shares", "仓位占比": "position_pct"}
+
+
+@app.post("/api/upload/portfolio")
+async def upload_portfolio(file: UploadFile):
+    """Parse an uploaded xlsx/xls/csv portfolio file and return preview rows."""
+    import pandas as pd
+
+    filename = (file.filename or "").lower()
+    if not filename.endswith((".xlsx", ".xls", ".csv")):
+        raise HTTPException(400, "仅支持 .xlsx / .xls / .csv 格式文件")
+
+    contents = await file.read()
+    try:
+        if filename.endswith(".csv"):
+            import io
+            df = pd.read_csv(io.BytesIO(contents), dtype=str)
+        else:
+            import io
+            df = pd.read_excel(io.BytesIO(contents), dtype=str, engine="openpyxl")
+    except Exception as e:
+        raise HTTPException(400, f"文件解析失败: {e}")
+
+    # Strip whitespace from column names
+    df.columns = [c.strip() for c in df.columns]
+
+    if "股票代码" not in df.columns:
+        raise HTTPException(400, '文件中缺少“股票代码”列，请使用模板格式')
+
+    if len(df) > _UPLOAD_MAX_ROWS:
+        raise HTTPException(400, f"最多支持 {_UPLOAD_MAX_ROWS} 行数据，当前 {len(df)} 行")
+
+    if len(df) == 0:
+        raise HTTPException(400, "文件为空，没有数据行")
+
+    rows = []
+    errors = []
+    for idx, row in df.iterrows():
+        ticker_raw = str(row.get("股票代码", "")).strip()
+        if not ticker_raw:
+            errors.append(f"第 {idx + 2} 行: 股票代码为空")
+            continue
+
+        # Normalize ticker
+        try:
+            ticker, code = _normalize_ticker(ticker_raw)
+            err = _validate_ticker(ticker_raw, ticker)
+            if err:
+                errors.append(f"第 {idx + 2} 行: {err}")
+                continue
+        except Exception:
+            errors.append(f"第 {idx + 2} 行: 无法识别的股票代码 \"{ticker_raw}\"")
+            continue
+
+        # Parse optional numeric fields
+        cost_price = _parse_number(row.get("成本价"))
+        shares = _parse_number(row.get("持仓数量"))
+        position_pct = _parse_number(row.get("仓位占比"))
+
+        name = _sina_name_lookup(ticker) or code
+        rows.append({
+            "ticker": ticker,
+            "name": name,
+            "cost_price": cost_price,
+            "shares": shares,
+            "position_pct": position_pct,
+        })
+
+    return {"rows": rows, "errors": errors}
+
+
+def _parse_number(val) -> float | None:
+    """Parse a cell value to float, return None if empty/invalid."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if not s or s.lower() == "nan":
+        return None
+    try:
+        return float(s)
+    except (ValueError, TypeError):
+        return None
+
+
+# Need pandas reference for _parse_number
+import pandas as pd  # noqa: E402 (already imported at module scope for type check)
+
+
+@app.get("/api/template/portfolio")
+async def download_portfolio_template():
+    """Download the portfolio template xlsx file."""
+    template_path = STATIC_DIR / "portfolio_template.xlsx"
+    if not template_path.exists():
+        raise HTTPException(404, "模板文件不存在")
+    return FileResponse(
+        str(template_path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename="持仓模板.xlsx",
+    )
 
 @app.on_event("startup")
 async def startup():
@@ -672,8 +897,13 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
     with _tasks_lock:
         batches[batch_id] = batch
 
-    for t in task_list:
-        _work_queue.put(t["task_id"])
+    # Launch two-phase batch execution in background thread
+    threading.Thread(
+        target=_run_batch,
+        args=(batch_id, [t["task_id"] for t in task_list]),
+        daemon=True,
+        name=f"batch-{batch_id}",
+    ).start()
 
     return {"batch_id": batch_id, "tasks": task_list}
 
@@ -699,12 +929,13 @@ async def get_batch_status(batch_id: str):
             "name": t.name,
             "status": t.status,
             "signal": t.signal,
+            "error": t.error,
             "stage_message": last_stage,
             "has_pdf": bool(t.pdf_path and Path(t.pdf_path).exists()),
             "has_html": bool(t.html_path and Path(t.html_path).exists()),
         })
 
-    done_count = sum(1 for r in result if r["status"] in ("done", "failed"))
+    done_count = sum(1 for r in result if r["status"] in ("done", "failed", "cancelled"))
     return {
         "batch_id": batch_id,
         "total": len(result),
@@ -827,6 +1058,152 @@ async def cancel_batch(batch_id: str):
             task.cancelled = True
             cancelled.append(task.ticker)
     return {"message": f"已取消 {len(cancelled)} 个任务", "cancelled": cancelled}
+
+
+@app.post("/api/batch/{batch_id}/portfolio-advice")
+async def generate_portfolio_advice(batch_id: str):
+    """Generate portfolio allocation advice after all tasks in a batch are done."""
+    with _tasks_lock:
+        batch = batches.get(batch_id)
+    if not batch:
+        raise HTTPException(404, "批次不存在")
+
+    # Validate all tasks are finished
+    done_tasks: list[TaskInfo] = []
+    for tid in batch.task_ids:
+        t = tasks.get(tid)
+        if not t:
+            continue
+        if t.status not in ("done", "failed", "cancelled"):
+            raise HTTPException(400, f"{t.ticker} 尚未完成分析，请等待全部完成后再生成组合建议")
+        if t.status == "done":
+            done_tasks.append(t)
+
+    if not done_tasks:
+        raise HTTPException(400, "没有成功完成的分析任务")
+
+    # Collect holdings info and analysis summaries
+    holdings = []
+    summaries = []
+    for t in done_tasks:
+        pos = t.position
+        h = {
+            "ticker": t.ticker,
+            "name": t.name,
+            "signal": t.signal,
+            "cost_price": pos.cost_price if pos else None,
+            "shares": pos.shares if pos else None,
+            "position_pct": pos.position_pct if pos else None,
+        }
+        holdings.append(h)
+
+        # Read final_trade_decision from saved final_state
+        decision_summary = ""
+        safe = safe_ticker_component(t.ticker)
+        state_path = OUTPUT_DIR / f"{safe}_final_state.json"
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                ftd = state.get("final_trade_decision", "")
+                decision_summary = ftd[:800] if ftd else ""
+            except Exception:
+                pass
+
+        pos_desc = ""
+        if pos and (pos.cost_price or pos.shares or pos.position_pct):
+            parts = []
+            if pos.cost_price is not None:
+                parts.append(f"成本价:{pos.cost_price}")
+            if pos.shares is not None:
+                parts.append(f"持仓数量:{pos.shares}")
+            if pos.position_pct is not None:
+                parts.append(f"仓位占比:{pos.position_pct}%")
+            pos_desc = ", ".join(parts)
+        else:
+            pos_desc = "未持有"
+
+        summaries.append(
+            f"### {t.name} ({t.ticker})\n"
+            f"- AI评级: {t.signal or '无'}\n"
+            f"- 持仓: {pos_desc}\n"
+            f"- 分析结论摘要:\n{decision_summary}\n"
+        )
+
+    # Build the portfolio manager prompt
+    user_content = (
+        "以下是我当前关注/持有的股票列表及各自的AI分析结论：\n\n"
+        + "\n---\n".join(summaries)
+        + "\n\n---\n\n"
+        "请综合以上所有分析结论，给出整体组合配置建议。要求：\n"
+        "1. 整体风险评估：当前组合的风险集中度、行业分散度\n"
+        "2. 建议调仓方案：对每只股票给出具体操作建议（加仓/减仓/清仓/建仓/持有），并标明建议目标仓位比例\n"
+        "3. 执行优先级：按紧迫程度排序，哪些需要立即操作，哪些可以观望\n"
+        "4. 新增标的建议：如果组合过于集中，建议补充哪些方向的标的来分散风险\n"
+        "5. 用表格汇总最终建议仓位\n"
+    )
+
+    system_prompt = (
+        "你是一位资深的组合投资经理，擅长根据个股分析结论为客户制定整体仓位配置方案。"
+        "你需要综合考虑每只股票的风险收益比、行业相关性、仓位集中度，"
+        "给出专业、具体、可执行的调仓建议。请用中文回复，格式使用 Markdown。"
+    )
+
+    # Call LLM
+    try:
+        config = _make_config()
+        from tradingagents.llm_clients import create_llm_client
+        client = create_llm_client(
+            provider=config["llm_provider"],
+            model=config["deep_think_llm"],
+            base_url=config.get("backend_url"),
+            temperature=config.get("temperature", 0),
+        )
+        llm = client.get_llm()
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]
+        response = llm.invoke(messages)
+        advice_text = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        logger.exception("Portfolio advice LLM call failed")
+        raise HTTPException(500, f"生成组合建议失败: {exc}")
+
+    # Render HTML report
+    from web.portfolio_report import render_portfolio_report
+    html_content = render_portfolio_report(
+        holdings=holdings,
+        advice_markdown=advice_text,
+        model=config.get("deep_think_llm", ""),
+    )
+
+    # Save report
+    report_name = f"portfolio_advice_{batch_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    report_path = OUTPUT_DIR / report_name
+    report_path.write_text(html_content, encoding="utf-8")
+    logger.info("Portfolio advice report saved: %s", report_path)
+
+    # Convert to PDF
+    pdf_name = report_name.replace(".html", ".pdf")
+    pdf_path = OUTPUT_DIR / pdf_name
+    _convert_to_pdf(str(report_path), str(pdf_path))
+    has_pdf = pdf_path.exists()
+
+    return {
+        "report_url": f"/api/portfolio-report/{report_name}",
+        "report_name": report_name,
+        "pdf_url": f"/api/portfolio-report/{pdf_name}" if has_pdf else None,
+    }
+
+
+@app.get("/api/portfolio-report/{filename}")
+async def serve_portfolio_report(filename: str):
+    """Serve a generated portfolio advice report (HTML or PDF)."""
+    path = OUTPUT_DIR / filename
+    if not path.exists() or not filename.startswith("portfolio_advice_"):
+        raise HTTPException(404, "报告不存在")
+    if filename.endswith(".pdf"):
+        return FileResponse(str(path), media_type="application/pdf", filename=filename)
+    return FileResponse(str(path), media_type="text/html")
 
 
 @app.post("/api/tasks/clear")

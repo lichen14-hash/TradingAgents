@@ -29,7 +29,11 @@ def create_bear_researcher(llm):
 Key points to focus on:
 
 - Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
+- Competitive Moat Skepticism (MUST be specific): Do NOT accept vague claims of "strong technology" or "industry leader" at face value. You MUST critically examine:
+  (a) Are the claimed core technologies truly proprietary, or are they industry-standard processes that competitors also possess?
+  (b) Name specific competitors who are catching up or have comparable capabilities. What is their market share trajectory?
+  (c) Are switching costs real and quantifiable, or are they overstated? Can customers dual-source or substitute?
+  (d) Is the moat narrowing due to technology commoditization, new entrants, or shifting industry standards?
 - Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
 - Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
 - Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
