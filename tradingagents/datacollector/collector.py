@@ -8,6 +8,8 @@ import os
 import platform
 import shutil
 from datetime import datetime, timedelta
+
+from tradingagents.utils.time_utils import now, now_iso, pd_today
 from pathlib import Path
 
 import pandas as pd
@@ -81,7 +83,7 @@ def _resolve_trading_date(ticker: str, trade_date: str) -> tuple[str, pd.DataFra
     if input_dt.weekday() >= 5:
         return corrected, df, "non_trading_day"
 
-    today = pd.Timestamp.today().normalize()
+    today = pd_today()
     if input_dt == today:
         return corrected, df, "data_not_ready"
 
@@ -97,12 +99,131 @@ def _validate_market_date(value: str, corrected_date: str, label: str) -> str:
     return value
 
 
+def _market_close_minutes(ticker: str) -> int:
+    if is_hk_stock(ticker):
+        return 16 * 60 + 15
+    if is_a_share(ticker):
+        return 15 * 60
+    return 5 * 60
+
+
+def _force_last_complete_daily_bar(
+    ticker: str,
+    requested_trade_date: str,
+    resolved_trade_date: str,
+    ohlcv_df: pd.DataFrame | None,
+) -> tuple[str, pd.DataFrame | None, str]:
+    """During live sessions, avoid treating today's partial daily bar as final."""
+    try:
+        requested_dt = pd.to_datetime(requested_trade_date)
+    except Exception:
+        return resolved_trade_date, ohlcv_df, ""
+    today = pd_today()
+    if requested_dt != today or resolved_trade_date != today.strftime("%Y-%m-%d"):
+        return resolved_trade_date, ohlcv_df, ""
+
+    current = now()
+    current_minutes = current.hour * 60 + current.minute
+    if current_minutes >= _market_close_minutes(ticker):
+        return resolved_trade_date, ohlcv_df, ""
+    if ohlcv_df is None or ohlcv_df.empty or "Date" not in ohlcv_df.columns:
+        return resolved_trade_date, ohlcv_df, ""
+
+    df = ohlcv_df.copy()
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    prev = df[df["Date"] < today]
+    if prev.empty:
+        return resolved_trade_date, ohlcv_df, ""
+    corrected = prev["Date"].max().strftime("%Y-%m-%d")
+    return corrected, prev, "intraday_daily_bar_incomplete"
+
+
 class DataCollector:
     """Pre-fetch all data needed for a TradingAgents analysis run."""
 
     def __init__(self, config: dict | None = None):
         self.config = config or DEFAULT_CONFIG.copy()
         set_config(self.config)
+
+    def collect_shared_data(
+        self,
+        trade_date: str,
+        market_type: str = "a_share",
+    ) -> dict:
+        """Pre-fetch data common to all stocks of the same market type on same date.
+
+        Args:
+            trade_date: The trading date (yyyy-mm-dd).
+            market_type: One of "a_share", "hk", "us".
+
+        Returns:
+            Dict with keys: macro_indicators, global_news, predictions.
+        """
+        logger.info("Pre-fetching shared data for market_type=%s, date=%s", market_type, trade_date)
+        shared: dict = {}
+
+        # --- Macro indicators ---
+        macro: dict[str, str] = {}
+        if market_type == "a_share":
+            macro_list = self.config.get("cn_macro_indicators", list(CN_MACRO_INDICATORS))
+            from tradingagents.dataflows.china_macro import get_cn_macro_data
+            for ind in macro_list:
+                macro[ind] = _safe_call(f"shared_macro:{ind}", get_cn_macro_data, ind, trade_date, None)
+        elif market_type == "hk":
+            macro_list = self.config.get("hk_macro_indicators", list(HK_MACRO_INDICATORS))
+            from tradingagents.dataflows.hk_macro import get_hk_macro_data
+            for ind in macro_list:
+                macro[ind] = _safe_call(f"shared_macro:{ind}", get_hk_macro_data, ind, trade_date, None)
+        else:
+            macro_list = self.config.get("standard_macro_indicators", list(DEFAULT_MACRO_INDICATORS))
+            for ind in macro_list:
+                macro[ind] = _safe_call(
+                    f"shared_macro:{ind}",
+                    route_to_vendor, "get_macro_indicators", ind, trade_date, None,
+                )
+        shared["macro_indicators"] = macro
+
+        # --- Global news ---
+        lookback = self.config.get("global_news_lookback_days", 7)
+        limit = self.config.get("global_news_article_limit", 10)
+        if market_type == "a_share":
+            from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
+            shared["global_news"] = _safe_call(
+                "shared_news:global(akshare)", _ak_global_news, trade_date, lookback, limit,
+            )
+        elif market_type == "hk":
+            from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
+            shared["global_news"] = _safe_call(
+                "shared_news:global(hk_akshare)", _hk_global_news, trade_date, lookback, limit,
+            )
+        else:
+            shared["global_news"] = _safe_call(
+                "shared_news:global", route_to_vendor, "get_global_news", trade_date, lookback, limit,
+            )
+
+        # --- Prediction / market signals ---
+        predictions: dict[str, str] = {}
+        if market_type == "a_share":
+            pred_queries = self.config.get("cn_prediction_queries", list(CN_PREDICTION_QUERIES))
+            from tradingagents.dataflows.cn_market_signals import get_cn_market_signals
+            for query in pred_queries:
+                predictions[query] = _safe_call(f"shared_signal:{query}", get_cn_market_signals, query, None)
+        elif market_type == "hk":
+            pred_queries = self.config.get("hk_prediction_queries", list(HK_PREDICTION_QUERIES))
+            from tradingagents.dataflows.hk_market_signals import get_hk_market_signals
+            for query in pred_queries:
+                predictions[query] = _safe_call(f"shared_signal:{query}", get_hk_market_signals, query, None)
+        else:
+            pred_queries = self.config.get("standard_prediction_queries", list(DEFAULT_PREDICTION_QUERIES))
+            for query in pred_queries:
+                predictions[query] = _safe_call(
+                    f"shared_signal:{query}", route_to_vendor, "get_prediction_markets", query, None,
+                )
+        shared["predictions"] = predictions
+
+        logger.info("Shared data pre-fetch complete: %d macro, %d predictions",
+                    len(macro), len(predictions))
+        return shared
 
     def collect(
         self,
@@ -112,15 +233,27 @@ class DataCollector:
         selected_analysts: tuple[str, ...] | list[str] = (
             "market", "social", "news", "fundamentals",
         ),
+        shared_data: dict | None = None,
+        intraday: bool = False,
     ) -> DataBundle:
         selected = set(selected_analysts)
-        logger.info("Collecting data for %s on %s (analysts: %s)", ticker, trade_date, selected)
+        analysis_mode = "intraday" if intraday else "daily"
+        logger.info("Collecting data for %s on %s (mode=%s, analysts: %s)", ticker, trade_date, analysis_mode, selected)
 
         original_trade_date: str | None = None
+        requested_trade_date = trade_date
         date_correction_reason: str = ""
         ohlcv_df: pd.DataFrame | None = None
         try:
             corrected, ohlcv_df, reason = _resolve_trading_date(ticker, trade_date)
+            if intraday:
+                forced, forced_df, forced_reason = _force_last_complete_daily_bar(
+                    ticker, requested_trade_date, corrected, ohlcv_df,
+                )
+                if forced_reason:
+                    corrected = forced
+                    ohlcv_df = forced_df
+                    reason = forced_reason
             if corrected != trade_date:
                 logger.info("Trading date corrected: %s → %s (%s)", trade_date, corrected, reason)
                 original_trade_date = trade_date
@@ -135,7 +268,9 @@ class DataCollector:
             original_trade_date=original_trade_date,
             date_correction_reason=date_correction_reason,
             asset_type=asset_type,
-            collection_timestamp=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            collection_timestamp=now_iso(),
+            analysis_mode=analysis_mode,
+            intraday_asof=now_iso() if intraday else "",
             selected_analysts=sorted(selected),
             vendor_config={
                 "data_vendors": self.config.get("data_vendors", {}),
@@ -144,7 +279,9 @@ class DataCollector:
             bundle_version=BUNDLE_VERSION,
         )
 
-        market = self._collect_market_data(ticker, trade_date, ohlcv_df=ohlcv_df) if "market" in selected else None
+        market = self._collect_market_data(
+            ticker, trade_date, ohlcv_df=ohlcv_df, intraday=intraday,
+        ) if "market" in selected else None
 
         # Fetch ticker news once and share between sentiment and news analysts
         shared_ticker_news: str | None = None
@@ -156,7 +293,7 @@ class DataCollector:
             )
 
         sentiment = self._collect_sentiment_data(ticker, trade_date, shared_ticker_news) if "social" in selected else None
-        news = self._collect_news_data(ticker, trade_date, shared_ticker_news) if "news" in selected else None
+        news = self._collect_news_data(ticker, trade_date, shared_ticker_news, shared_data=shared_data) if "news" in selected else None
         fundamentals = self._collect_fundamentals_data(ticker, trade_date) if "fundamentals" in selected else None
 
         bundle = DataBundle(
@@ -174,9 +311,10 @@ class DataCollector:
         ticker: str,
         trade_date: str,
         save_dir: str | Path | None = None,
+        shared_data: dict | None = None,
         **kwargs,
     ) -> tuple[DataBundle, Path]:
-        bundle = self.collect(ticker, trade_date, **kwargs)
+        bundle = self.collect(ticker, trade_date, shared_data=shared_data, **kwargs)
         corrected_date = bundle.metadata.trade_date
         if save_dir:
             filepath = Path(save_dir) / self._filename(ticker, corrected_date)
@@ -214,6 +352,7 @@ class DataCollector:
         ticker: str,
         trade_date: str,
         ohlcv_df: pd.DataFrame | None = None,
+        intraday: bool = False,
     ) -> MarketData:
         start_date = _lookback_date(trade_date, 30)
 
@@ -237,10 +376,18 @@ class DataCollector:
             preloaded_ohlcv=ohlcv_df,
         )
 
+        intraday_snapshot = ""
+        if intraday:
+            from tradingagents.dataflows.intraday_provider import get_intraday_snapshot
+            intraday_snapshot = _safe_call(
+                "intraday_snapshot", get_intraday_snapshot, ticker,
+            )
+
         return MarketData(
             stock_data=stock_data,
             indicators=indicators,
             verified_snapshot=verified_snapshot,
+            intraday_snapshot=intraday_snapshot,
         )
 
     def _collect_sentiment_data(self, ticker: str, trade_date: str, ticker_news: str | None = None) -> SentimentData:
@@ -280,92 +427,108 @@ class DataCollector:
             reddit=reddit,
         )
 
-    def _collect_news_data(self, ticker: str, trade_date: str, ticker_news: str | None = None) -> NewsData:
+    def _collect_news_data(
+        self, ticker: str, trade_date: str,
+        ticker_news: str | None = None,
+        shared_data: dict | None = None,
+    ) -> NewsData:
         if ticker_news is None:
             start_date = _lookback_date(trade_date, 7)
             ticker_news = _safe_call(
                 "news:ticker",
                 route_to_vendor, "get_news", ticker, start_date, trade_date,
             )
-        lookback = self.config.get("global_news_lookback_days", 7)
-        limit = self.config.get("global_news_article_limit", 10)
 
-        if is_a_share(ticker):
-            from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
-            global_news = _safe_call(
-                "news:global(akshare)",
-                _ak_global_news, trade_date, lookback, limit,
-            )
-        elif is_hk_stock(ticker):
-            from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
-            global_news = _safe_call(
-                "news:global(hk_akshare)",
-                _hk_global_news, trade_date, lookback, limit,
-            )
+        # --- Global news: use shared or fetch per-stock ---
+        if shared_data and "global_news" in shared_data:
+            global_news = shared_data["global_news"]
         else:
-            global_news = _safe_call(
-                "news:global",
-                route_to_vendor, "get_global_news", trade_date, lookback, limit,
-            )
+            lookback = self.config.get("global_news_lookback_days", 7)
+            limit = self.config.get("global_news_article_limit", 10)
+            if is_a_share(ticker):
+                from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
+                global_news = _safe_call(
+                    "news:global(akshare)",
+                    _ak_global_news, trade_date, lookback, limit,
+                )
+            elif is_hk_stock(ticker):
+                from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
+                global_news = _safe_call(
+                    "news:global(hk_akshare)",
+                    _hk_global_news, trade_date, lookback, limit,
+                )
+            else:
+                global_news = _safe_call(
+                    "news:global",
+                    route_to_vendor, "get_global_news", trade_date, lookback, limit,
+                )
 
         insider = _safe_call(
             "news:insider",
             route_to_vendor, "get_insider_transactions", ticker,
         )
 
-        if is_a_share(ticker):
-            macro_list = self.config.get("cn_macro_indicators", list(CN_MACRO_INDICATORS))
-        elif is_hk_stock(ticker):
-            macro_list = self.config.get("hk_macro_indicators", list(HK_MACRO_INDICATORS))
+        # --- Macro indicators: use shared or fetch per-stock ---
+        if shared_data and "macro_indicators" in shared_data:
+            macro = shared_data["macro_indicators"]
         else:
-            macro_list = self.config.get("standard_macro_indicators", list(DEFAULT_MACRO_INDICATORS))
-        macro: dict[str, str] = {}
-        if is_a_share(ticker):
-            from tradingagents.dataflows.china_macro import get_cn_macro_data
-            for ind in macro_list:
-                macro[ind] = _safe_call(
-                    f"macro:{ind}", get_cn_macro_data, ind, trade_date, None,
-                )
-        elif is_hk_stock(ticker):
-            from tradingagents.dataflows.hk_macro import get_hk_macro_data
-            for ind in macro_list:
-                macro[ind] = _safe_call(
-                    f"macro:{ind}", get_hk_macro_data, ind, trade_date, None,
-                )
-        else:
-            for ind in macro_list:
-                macro[ind] = _safe_call(
-                    f"macro:{ind}",
-                    route_to_vendor, "get_macro_indicators", ind, trade_date, None,
-                )
+            if is_a_share(ticker):
+                macro_list = self.config.get("cn_macro_indicators", list(CN_MACRO_INDICATORS))
+            elif is_hk_stock(ticker):
+                macro_list = self.config.get("hk_macro_indicators", list(HK_MACRO_INDICATORS))
+            else:
+                macro_list = self.config.get("standard_macro_indicators", list(DEFAULT_MACRO_INDICATORS))
+            macro: dict[str, str] = {}
+            if is_a_share(ticker):
+                from tradingagents.dataflows.china_macro import get_cn_macro_data
+                for ind in macro_list:
+                    macro[ind] = _safe_call(
+                        f"macro:{ind}", get_cn_macro_data, ind, trade_date, None,
+                    )
+            elif is_hk_stock(ticker):
+                from tradingagents.dataflows.hk_macro import get_hk_macro_data
+                for ind in macro_list:
+                    macro[ind] = _safe_call(
+                        f"macro:{ind}", get_hk_macro_data, ind, trade_date, None,
+                    )
+            else:
+                for ind in macro_list:
+                    macro[ind] = _safe_call(
+                        f"macro:{ind}",
+                        route_to_vendor, "get_macro_indicators", ind, trade_date, None,
+                    )
 
-        if is_a_share(ticker):
-            pred_queries = self.config.get("cn_prediction_queries", list(CN_PREDICTION_QUERIES))
-        elif is_hk_stock(ticker):
-            pred_queries = self.config.get("hk_prediction_queries", list(HK_PREDICTION_QUERIES))
+        # --- Predictions / market signals: use shared or fetch per-stock ---
+        if shared_data and "predictions" in shared_data:
+            predictions = shared_data["predictions"]
         else:
-            pred_queries = self.config.get("standard_prediction_queries", list(DEFAULT_PREDICTION_QUERIES))
-        predictions: dict[str, str] = {}
-        if is_a_share(ticker):
-            from tradingagents.dataflows.cn_market_signals import get_cn_market_signals
-            for query in pred_queries:
-                predictions[query] = _safe_call(
-                    f"cn_signal:{query}", get_cn_market_signals, query, None,
-                )
-        elif is_hk_stock(ticker):
-            from tradingagents.dataflows.hk_market_signals import get_hk_market_signals
-            for query in pred_queries:
-                predictions[query] = _safe_call(
-                    f"hk_signal:{query}", get_hk_market_signals, query, None,
-                )
-        else:
-            for query in pred_queries:
-                predictions[query] = _safe_call(
-                    f"prediction:{query}",
-                    route_to_vendor, "get_prediction_markets", query, None,
-                )
+            if is_a_share(ticker):
+                pred_queries = self.config.get("cn_prediction_queries", list(CN_PREDICTION_QUERIES))
+            elif is_hk_stock(ticker):
+                pred_queries = self.config.get("hk_prediction_queries", list(HK_PREDICTION_QUERIES))
+            else:
+                pred_queries = self.config.get("standard_prediction_queries", list(DEFAULT_PREDICTION_QUERIES))
+            predictions: dict[str, str] = {}
+            if is_a_share(ticker):
+                from tradingagents.dataflows.cn_market_signals import get_cn_market_signals
+                for query in pred_queries:
+                    predictions[query] = _safe_call(
+                        f"cn_signal:{query}", get_cn_market_signals, query, None,
+                    )
+            elif is_hk_stock(ticker):
+                from tradingagents.dataflows.hk_market_signals import get_hk_market_signals
+                for query in pred_queries:
+                    predictions[query] = _safe_call(
+                        f"hk_signal:{query}", get_hk_market_signals, query, None,
+                    )
+            else:
+                for query in pred_queries:
+                    predictions[query] = _safe_call(
+                        f"prediction:{query}",
+                        route_to_vendor, "get_prediction_markets", query, None,
+                    )
 
-        # Industry rotation + stock money flow
+        # Industry rotation + stock money flow (per-stock, not shared)
         industry_data = ""
         stock_moneyflow = ""
         if is_a_share(ticker):

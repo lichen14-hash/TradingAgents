@@ -45,6 +45,7 @@ def create_market_analyst(llm):
 
         stock_block = m.stock_data if m else "<unavailable>"
         snapshot_block = m.verified_snapshot if m else "<unavailable>"
+        intraday_block = m.intraday_snapshot if m and m.intraday_snapshot else "<not requested>"
 
         indicators_block = "<unavailable>"
         if m and m.indicators:
@@ -65,8 +66,12 @@ def create_market_analyst(llm):
             "<stock_data>\n" + stock_block + "\n</stock_data>\n\n"
             "<technical_indicators>\n" + indicators_block + "\n</technical_indicators>\n\n"
             "<verified_snapshot>\n" + snapshot_block + "\n</verified_snapshot>\n\n"
-            "The verified snapshot is the source of truth for any exact OHLCV,"
-            " price-level, or indicator-value claim. If other data conflicts with"
+            "<intraday_snapshot>\n" + intraday_block + "\n</intraday_snapshot>\n\n"
+            "The verified snapshot is the source of truth for any exact daily OHLCV,"
+            " price-level, or indicator-value claim. The intraday snapshot, when present,"
+            " is a current-session execution overlay only: explicitly label it as"
+            " unfinished data, separate intraday actions from close-confirmation actions,"
+            " and never treat it as a completed daily candle. If other data conflicts with"
             " the verified snapshot, flag the discrepancy rather than inventing a"
             " reconciled number. Do not claim historical validation, support/resistance"
             " bounces, or exact percentage moves unless directly supported by the"

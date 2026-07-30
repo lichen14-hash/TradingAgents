@@ -332,6 +332,10 @@ _HK_VENDOR_CHAINS = {
 
 _DEFAULT_US_VENDORS = {"yfinance", "alpha_vantage", "fred", "default"}
 
+# Vendors that are already HK/A-share specific — if these are configured, don't override
+_HK_SPECIFIC_VENDORS = {"hk_akshare"}
+_A_SHARE_SPECIFIC_VENDORS = {"tushare", "akshare", "baostock"}
+
 
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
@@ -341,15 +345,18 @@ def route_to_vendor(method: str, *args, **kwargs):
     ticker_arg = args[0] if args else None
     if ticker_arg and method in _HK_VENDOR_CHAINS:
         t = str(ticker_arg)
-        if is_hk_stock(t) and {v.strip() for v in vendor_config.split(",")}.issubset(_DEFAULT_US_VENDORS):
+        configured = {v.strip() for v in vendor_config.split(",")}
+        # Override to HK chain unless user explicitly configured HK-specific vendors
+        if is_hk_stock(t) and not configured.intersection(_HK_SPECIFIC_VENDORS):
             vendor_config = _HK_VENDOR_CHAINS[method]
     if (
         ticker_arg
         and is_a_share(str(ticker_arg))
         and method in _A_SHARE_VENDOR_CHAINS
-        and {v.strip() for v in vendor_config.split(",")}.issubset(_DEFAULT_US_VENDORS)
     ):
-        vendor_config = _A_SHARE_VENDOR_CHAINS[method]
+        configured = {v.strip() for v in vendor_config.split(",")}
+        if not configured.intersection(_A_SHARE_SPECIFIC_VENDORS):
+            vendor_config = _A_SHARE_VENDOR_CHAINS[method]
 
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 

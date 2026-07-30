@@ -14,12 +14,16 @@ HK macro is a blend of:
 from __future__ import annotations
 
 import logging
+import os
+import time
 from datetime import datetime, timedelta
 
 import pandas as pd
 import requests
 
+from .config import get_config
 from .retry import call_with_retry
+from tradingagents.utils.time_utils import now
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +31,9 @@ DEFAULT_LOOKBACK_DAYS = 365
 MAX_ROWS = 40
 HKMA_BASE = "https://api.hkma.gov.hk/public"
 HKMA_TIMEOUT = 15
+# HKMA 指标(HIBOR/汇率/货币基础)变化极慢，且分析看的是窗口趋势。
+# 接口超时时降级使用缓存值，5 个自然日（约覆盖 3 交易日 + 周末）内的缓存视为新鲜。
+HKMA_CACHE_MAX_AGE_DAYS = 5
 
 
 def _get_ak():
@@ -58,6 +65,79 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# HKMA cache — HKMA API 经常超时，缓存最近成功结果作为降级兜底。
+# 这些指标变化极慢，用几天前的缓存值对趋势分析几乎无影响。
+# ---------------------------------------------------------------------------
+
+def _hkma_cache_path(cache_key: str) -> str:
+    cache_dir = get_config().get("data_cache_dir", "local_data/cache")
+    return os.path.join(cache_dir, f"{cache_key}.csv")
+
+
+def _tidy_hkma_df(df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """规整 HKMA 数据：统一列(date/value)、去 NaN、按日期去重并升序。
+
+    返回的 ``date`` 列为 datetime 类型，供 _format_report 直接比较使用。
+    """
+    if df is None or df.empty or "date" not in df.columns or "value" not in df.columns:
+        return None
+    out = df[["date", "value"]].copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out["value"] = pd.to_numeric(out["value"], errors="coerce")
+    out = out.dropna(subset=["date", "value"])
+    if out.empty:
+        return None
+    out = out.drop_duplicates(subset=["date"], keep="last")
+    out = out.sort_values("date").reset_index(drop=True)
+    return out
+
+
+def _write_hkma_cache(cache_key: str, df: pd.DataFrame) -> pd.DataFrame | None:
+    """规整后写入缓存(date 存为 ISO 字符串)，返回规整后的 df(date 为 datetime)。"""
+    tidy = _tidy_hkma_df(df)
+    if tidy is None:
+        return None
+    try:
+        path = _hkma_cache_path(cache_key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        out = tidy.copy()
+        out["date"] = out["date"].dt.strftime("%Y-%m-%d")
+        out.to_csv(path, index=False, encoding="utf-8")
+    except Exception as e:
+        logger.warning("Failed to write HKMA cache %s: %s", cache_key, e)
+    return tidy
+
+
+def _read_hkma_cache(cache_key: str) -> pd.DataFrame | None:
+    """读取缓存，仅当文件在有效期内(基于 mtime 秒级比较，避开时区问题)才返回。"""
+    path = _hkma_cache_path(cache_key)
+    if not os.path.exists(path):
+        return None
+    age_days = (time.time() - os.path.getmtime(path)) / 86400.0
+    if age_days > HKMA_CACHE_MAX_AGE_DAYS:
+        logger.warning(
+            "HKMA cache %s expired (age %.1f days > %d)", cache_key, age_days, HKMA_CACHE_MAX_AGE_DAYS
+        )
+        return None
+    try:
+        df = _tidy_hkma_df(pd.read_csv(path, encoding="utf-8"))
+        if df is None:
+            return None
+        df.attrs["cache_note"] = (
+            f"⚠️ Data source fallback: using cached macro data ({cache_key}, "
+            f"cache age {age_days:.1f} days). Treat the latest value as a fallback snapshot; "
+            "do not over-interpret small changes without fresh confirmation."
+        )
+        logger.info(
+            "HKMA %s: fallback to cache (%d rows, age %.1f days)", cache_key, len(df), age_days
+        )
+        return df
+    except Exception as e:
+        logger.warning("Failed to read HKMA cache %s: %s", cache_key, e)
+        return None
+
+
 # Map indicator aliases to fetcher functions
 HK_MACRO_FETCHERS: dict[str, callable] = {
     # HKMA daily monetary statistics (reliable, no akshare dependency)
@@ -73,16 +153,17 @@ HK_MACRO_FETCHERS: dict[str, callable] = {
 def _fetch_hkma_hibor() -> tuple[str, str, pd.DataFrame | None]:
     """HIBOR rates from HKMA daily monetary statistics API."""
     title = "Hong Kong HIBOR (Overnight & 1M)"
+    cache_key = "hkma_hibor"
     try:
         url = f"{HKMA_BASE}/market-data-and-statistics/daily-monetary-statistics/daily-figures-interbank-liquidity"
         r = requests.get(url, params={"pagesize": 60, "sortorder": "desc", "sortby": "end_of_date"}, timeout=HKMA_TIMEOUT)
         data = r.json()
         if not data.get("header", {}).get("success"):
             logger.warning("HKMA HIBOR API failed: %s", data.get("header", {}).get("err_msg"))
-            return title, "%", None
+            return title, "%", _read_hkma_cache(cache_key)
         records = data.get("result", {}).get("records", [])
         if not records:
-            return title, "%", None
+            return title, "%", _read_hkma_cache(cache_key)
         rows = []
         for rec in records:
             date_str = rec.get("end_of_date")
@@ -90,26 +171,28 @@ def _fetch_hkma_hibor() -> tuple[str, str, pd.DataFrame | None]:
             if date_str and hibor_on is not None:
                 rows.append({"date": pd.to_datetime(date_str), "value": float(hibor_on)})
         if not rows:
-            return title, "%", None
-        return title, "%", pd.DataFrame(rows)
+            return title, "%", _read_hkma_cache(cache_key)
+        return title, "%", _write_hkma_cache(cache_key, pd.DataFrame(rows))
     except Exception as e:
         logger.warning("HKMA HIBOR fetch failed: %s", e)
-        return title, "%", None
+        return title, "%", _read_hkma_cache(cache_key)
 
 
 def _fetch_hkma_exchange_rate() -> tuple[str, str, pd.DataFrame | None]:
     """HKD/USD exchange rate band from HKMA daily monetary statistics."""
-    title = "HKD/USD (Weak-side CU)"
+    title = "HKD Trade-Weighted Index (HKMA)"
+    units = "Index"
+    cache_key = "hkma_twi"
     try:
         url = f"{HKMA_BASE}/market-data-and-statistics/daily-monetary-statistics/daily-figures-interbank-liquidity"
         r = requests.get(url, params={"pagesize": 60, "sortorder": "desc", "sortby": "end_of_date"}, timeout=HKMA_TIMEOUT)
         data = r.json()
         if not data.get("header", {}).get("success"):
             logger.warning("HKMA exchange rate API failed: %s", data.get("header", {}).get("err_msg"))
-            return title, "HKD/USD", None
+            return title, units, _read_hkma_cache(cache_key)
         records = data.get("result", {}).get("records", [])
         if not records:
-            return title, "HKD/USD", None
+            return title, units, _read_hkma_cache(cache_key)
         rows = []
         for rec in records:
             date_str = rec.get("end_of_date")
@@ -118,26 +201,27 @@ def _fetch_hkma_exchange_rate() -> tuple[str, str, pd.DataFrame | None]:
             if date_str and twi is not None:
                 rows.append({"date": pd.to_datetime(date_str), "value": float(twi)})
         if not rows:
-            return title, "HKD/USD", None
-        return "HKD Trade-Weighted Index (HKMA)", "Index", pd.DataFrame(rows)
+            return title, units, _read_hkma_cache(cache_key)
+        return title, units, _write_hkma_cache(cache_key, pd.DataFrame(rows))
     except Exception as e:
         logger.warning("HKMA exchange rate fetch failed: %s", e)
-        return title, "HKD/USD", None
+        return title, units, _read_hkma_cache(cache_key)
 
 
 def _fetch_hkma_monetary_base() -> tuple[str, str, pd.DataFrame | None]:
     """HK Aggregate Balance from HKMA daily monetary base statistics."""
     title = "HK Aggregate Balance (Monetary Base)"
+    cache_key = "hkma_monetary_base"
     try:
         url = f"{HKMA_BASE}/market-data-and-statistics/daily-monetary-statistics/daily-figures-monetary-base"
         r = requests.get(url, params={"pagesize": 60, "sortorder": "desc", "sortby": "end_of_date"}, timeout=HKMA_TIMEOUT)
         data = r.json()
         if not data.get("header", {}).get("success"):
             logger.warning("HKMA monetary base API failed: %s", data.get("header", {}).get("err_msg"))
-            return title, "HKD mn", None
+            return title, "HKD mn", _read_hkma_cache(cache_key)
         records = data.get("result", {}).get("records", [])
         if not records:
-            return title, "HKD mn", None
+            return title, "HKD mn", _read_hkma_cache(cache_key)
         rows = []
         for rec in records:
             date_str = rec.get("end_of_date")
@@ -145,11 +229,11 @@ def _fetch_hkma_monetary_base() -> tuple[str, str, pd.DataFrame | None]:
             if date_str and aggr_bal is not None:
                 rows.append({"date": pd.to_datetime(date_str), "value": float(aggr_bal)})
         if not rows:
-            return title, "HKD mn", None
-        return title, "HKD mn", pd.DataFrame(rows)
+            return title, "HKD mn", _read_hkma_cache(cache_key)
+        return title, "HKD mn", _write_hkma_cache(cache_key, pd.DataFrame(rows))
     except Exception as e:
         logger.warning("HKMA monetary base fetch failed: %s", e)
-        return title, "HKD mn", None
+        return title, "HKD mn", _read_hkma_cache(cache_key)
 
 
 def _fetch_us_treasury() -> tuple[str, str, pd.DataFrame | None]:
@@ -158,7 +242,7 @@ def _fetch_us_treasury() -> tuple[str, str, pd.DataFrame | None]:
     title = "US Treasury 10Y Yield"
 
     try:
-        start_dt = datetime.now() - timedelta(days=DEFAULT_LOOKBACK_DAYS)
+        start_dt = now() - timedelta(days=DEFAULT_LOOKBACK_DAYS)
         df = _safe_fetch(
             ak.bond_zh_us_rate,
             start_date=start_dt.strftime("%Y%m%d"),
@@ -185,6 +269,7 @@ def _fetch_hk_rmb_hibor() -> tuple[str, str, pd.DataFrame | None]:
     """Offshore RMB HIBOR overnight — reflects CNH liquidity in HK."""
     ak = _get_ak()
     title = "Offshore RMB HIBOR Overnight"
+    cache_key = "hk_rmb_hibor"
 
     try:
         df = _safe_fetch(
@@ -205,11 +290,11 @@ def _fetch_hk_rmb_hibor() -> tuple[str, str, pd.DataFrame | None]:
                 ).dropna()
                 out["date"] = pd.to_datetime(out["date"], errors="coerce")
                 out["value"] = pd.to_numeric(out["value"], errors="coerce")
-                return title, "%", out.dropna()
+                return title, "%", _write_hkma_cache(cache_key, out)
     except Exception as e:
         logger.warning("rate_interbank(RMB HIBOR) failed: %s", e)
 
-    return title, "%", None
+    return title, "%", _read_hkma_cache(cache_key)
 
 # Shared China mainland indicators — delegate to china_macro
 _SHARED_CN_INDICATORS = {
@@ -231,6 +316,9 @@ def _format_report(
         f"- Window: {start_date} to {end_date}\n"
         f"- Source: HKMA / AKShare\n"
     )
+    cache_note = df.attrs.get("cache_note")
+    if cache_note:
+        header += f"\n> **Cache notice:** {cache_note}\n"
 
     df = df.sort_values("date")
     start_dt = pd.to_datetime(start_date)

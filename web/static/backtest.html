@@ -77,6 +77,42 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .btn-action:hover { opacity: 0.9; }
 .btn-action.secondary { background: #6c757d; }
 
+/* Evaluation panel */
+.eval-btn { display: block; width: 100%; padding: 14px; margin-bottom: 24px;
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white; border: none; border-radius: 12px; font-size: 16px;
+            font-weight: 700; cursor: pointer; box-shadow: 0 4px 16px rgba(245,87,108,0.3); }
+.eval-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+.eval-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.eval-panel { display: none; margin-bottom: 24px; }
+.eval-panel.visible { display: block; }
+.review-card { background: #f8f9ff; border-radius: 10px; padding: 16px; margin-bottom: 12px;
+              border-left: 4px solid #667eea; }
+.review-card .verdict { font-weight: 700; margin-left: 8px; }
+.review-card .verdict.effective { color: #28a745; }
+.review-card .verdict.ineffective { color: #dc3545; }
+.review-card .verdict.insufficient_data { color: #888; }
+.suggestion-card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 12px;
+                  box-shadow: 0 2px 12px rgba(0,0,0,0.08); border-left: 4px solid #667eea; }
+.suggestion-card.high { border-left-color: #dc3545; }
+.suggestion-card.medium { border-left-color: #ffc107; }
+.suggestion-card.low { border-left-color: #28a745; }
+.suggestion-card h4 { font-size: 15px; margin-bottom: 6px; }
+.suggestion-card .impact-tag { display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 600; margin-left: 8px; }
+.impact-tag.high { background: #f8d7da; color: #721c24; }
+.impact-tag.medium { background: #fff3cd; color: #856404; }
+.impact-tag.low { background: #d4edda; color: #155724; }
+.suggestion-card .desc { font-size: 14px; color: #555; margin: 8px 0 12px; line-height: 1.5; }
+.suggestion-card .actions { display: flex; gap: 8px; }
+.suggestion-card .actions button { padding: 6px 14px; border-radius: 6px; font-size: 13px;
+  font-weight: 600; border: none; cursor: pointer; }
+.btn-apply { background: #28a745; color: white; }
+.btn-ignore { background: #e9ecef; color: #495057; }
+.btn-copy { background: #17a2b8; color: white; }
+.eval-summary { background: #e8f5e9; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.eval-summary p { font-size: 14px; margin: 4px 0; }
+
 /* Predictions table */
 .pred-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .pred-table th, .pred-table td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #f0f0f0; }
@@ -166,6 +202,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       </div>
       <button class="btn-add" onclick="saveConfig()">保存</button>
     </div>
+  </div>
+
+  <!-- One-click Evaluation -->
+  <button class="eval-btn" id="eval-btn" onclick="triggerEvaluation()">一键评测——结算 + 分析 + 优化建议</button>
+
+  <div class="eval-panel" id="eval-panel">
+    <!-- Review of past suggestions -->
+    <div id="eval-review"></div>
+    <!-- Evaluation summary -->
+    <div id="eval-summary"></div>
+    <!-- New suggestions -->
+    <div id="eval-suggestions"></div>
   </div>
 
   <!-- Watchlist -->
@@ -420,6 +468,148 @@ async function loadPredictions() {
 
 // ---- Init ----
 document.addEventListener('DOMContentLoaded', loadAll);
+
+// ---- One-click Evaluation ----
+let _evalSessionId = null;
+let _evalData = null;
+
+async function triggerEvaluation() {
+  const btn = document.getElementById('eval-btn');
+  btn.disabled = true;
+  btn.textContent = '评测中…请稍候（需要 30-60 秒）';
+  try {
+    const r = await fetch(`${API}/evaluate`, {method: 'POST'});
+    if (!r.ok) {
+      const errBody = await r.text();
+      throw new Error(`服务端错误 (${r.status}): ${errBody.slice(0, 200)}`);
+    }
+    const d = await r.json();
+    _evalSessionId = d.session_id;
+    _evalData = d;
+    renderEvaluation(d);
+    document.getElementById('eval-panel').classList.add('visible');
+    loadAll(); // refresh dashboard data
+  } catch(e) {
+    alert('评测失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '一键评测——结算 + 分析 + 优化建议';
+  }
+}
+
+function renderEvaluation(d) {
+  // Review section
+  const reviewEl = document.getElementById('eval-review');
+  if (d.review && d.review.length) {
+    const verdictLabels = {effective: '\u2705 有效', ineffective: '\u274c 无效', insufficient_data: '\u2753 数据不足'};
+    reviewEl.innerHTML = '<div class="section-card"><h3>历史建议回顾</h3>' +
+      d.review.map(r => `
+        <div class="review-card">
+          <strong>[${r.category}] ${r.title}</strong>
+          <span class="verdict ${r.verdict}">${verdictLabels[r.verdict] || r.verdict}</span>
+          <div style="margin-top:6px;font-size:13px;color:#666">准确率变化: ${r.accuracy_change >= 0 ? '+' : ''}${r.accuracy_change}%</div>
+        </div>
+      `).join('') + '</div>';
+  } else {
+    reviewEl.innerHTML = '';
+  }
+
+  // Summary section
+  const sumEl = document.getElementById('eval-summary');
+  const s = d.evaluation?.summary || {};
+  const resolveWarn = d.resolve_error ? `<p style="color:#e67e22;font-size:13px">⚠️ ${d.resolve_error}</p>` : '';
+  sumEl.innerHTML = `
+    <div class="eval-summary">
+      <p><strong>本次结算:</strong> ${d.resolved_count ?? 0} 条预测</p>
+      ${resolveWarn}
+      <p><strong>当前准确率:</strong> ${s.accuracy_pct ?? 0}% | <strong>平均 Alpha:</strong> ${s.avg_alpha_pct ?? 0}%</p>
+      <p><strong>总计:</strong> ${s.total ?? 0} 条预测, ${s.resolved ?? 0} 已结算, ${s.pending ?? 0} 待结算</p>
+    </div>`;
+
+  // Suggestions
+  const sugEl = document.getElementById('eval-suggestions');
+  if (!d.suggestions || !d.suggestions.length) {
+    sugEl.innerHTML = '<div class="empty-state">暂无建议</div>';
+    return;
+  }
+  const impactLabels = {high: '高', medium: '中', low: '低'};
+  sugEl.innerHTML = '<div class="section-card"><h3>AI 优化建议</h3>' +
+    d.suggestions.map((s, i) => `
+      <div class="suggestion-card ${s.impact || 'medium'}" id="sug-${s.id}">
+        <h4>[${s.category}] ${s.title}
+          <span class="impact-tag ${s.impact || 'medium'}">影响: ${impactLabels[s.impact] || '中'}</span>
+        </h4>
+        <div class="desc">${s.description}</div>
+        <div class="actions">
+          <button class="btn-apply" onclick="applySuggestion('${s.id}')">应用</button>
+          <button class="btn-ignore" onclick="ignoreSuggestion('${s.id}')">忽略</button>
+          <button class="btn-copy" onclick="copySuggestion(${i})">复制到剪贴板</button>
+        </div>
+      </div>
+    `).join('') + '</div>';
+}
+
+async function applySuggestion(suggestionId) {
+  if (!_evalSessionId) return;
+  try {
+    const r = await fetch(`${API}/apply-suggestion`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({suggestion_id: suggestionId, session_id: _evalSessionId})
+    });
+    const d = await r.json();
+    const card = document.getElementById(`sug-${suggestionId}`);
+    if (card) {
+      card.style.opacity = '0.5';
+      card.querySelector('.actions').innerHTML = '<span style="color:#28a745;font-weight:600">✅ 已应用' +
+        (d.auto_applied ? '（配置已生效）' : '（需手动执行）') + '</span>';
+    }
+  } catch(e) { alert('应用失败: ' + e.message); }
+}
+
+async function ignoreSuggestion(suggestionId) {
+  if (!_evalSessionId) return;
+  try {
+    await fetch(`${API}/ignore-suggestion`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({suggestion_id: suggestionId, session_id: _evalSessionId})
+    });
+    const card = document.getElementById(`sug-${suggestionId}`);
+    if (card) {
+      card.style.opacity = '0.4';
+      card.querySelector('.actions').innerHTML = '<span style="color:#888;font-weight:600">已忽略</span>';
+    }
+  } catch(e) { console.error(e); }
+}
+
+function copySuggestion(index) {
+  if (!_evalData || !_evalData.suggestions) return;
+  const s = _evalData.suggestions[index];
+  const summary = _evalData.evaluation?.summary || {};
+  const text = `## 评测建议分析
+
+### 当前系统状态
+- 总预测: ${summary.total || 0} | 已结算: ${summary.resolved || 0} | 准确率: ${summary.accuracy_pct || 0}%
+- 平均 Alpha: ${summary.avg_alpha_pct || 0}%
+
+### AI 建议
+**[${s.category}] ${s.title}**
+影响等级: ${s.impact}
+
+${s.description}
+
+### 操作类型
+${JSON.stringify(s.action, null, 2)}
+
+请帮我分析这条建议是否合理，以及具体应该怎么执行。`;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = event.target;
+    const orig = btn.textContent;
+    btn.textContent = '✅ 已复制';
+    setTimeout(() => btn.textContent = orig, 1500);
+  }).catch(() => alert('复制失败，请手动复制'));
+}
 </script>
 </body>
 </html>

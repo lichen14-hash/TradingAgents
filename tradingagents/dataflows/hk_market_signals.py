@@ -15,11 +15,13 @@ Install: ``pip install akshare`` or ``pip install "tradingagents[china]"``
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 
 import pandas as pd
 
 from .retry import call_with_retry
+from tradingagents.utils.time_utils import today_str
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,15 @@ def _fetch_hk_connect_summary(limit: int | None) -> str:
     return "\n".join(lines)
 
 
+def _get_ah_cache_path() -> str:
+    """Return today's AH premium cache file path."""
+    from .interface import get_config
+    config = get_config()
+    cache_dir = config.get("data_cache_dir", "local_data/cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    return os.path.join(cache_dir, f"ah_premium_{today_str()}.csv")
+
+
 def _fetch_ah_premium(_limit: int | None) -> str:
     """AH premium data for dual-listed stocks.
 
@@ -174,8 +185,26 @@ def _fetch_ah_premium(_limit: int | None) -> str:
     """
     ak = _get_ak()
     df = _safe_fetch(ak.stock_zh_ah_spot_em)
-    if df is None:
-        return _unavailable_section("AH溢价", "AKShare 接口无返回")
+
+    cache_path = _get_ah_cache_path()
+
+    if df is not None and not df.empty:
+        # Success: save to cache for later use
+        try:
+            df.to_csv(cache_path, index=False, encoding="utf-8")
+        except Exception:
+            pass
+    else:
+        # Failed: try reading from today's cache
+        if os.path.exists(cache_path):
+            try:
+                df = pd.read_csv(cache_path, encoding="utf-8")
+                logger.info("Using cached AH premium data from %s", cache_path)
+            except Exception:
+                df = None
+
+    if df is None or df.empty:
+        return _unavailable_section("AH溢价", "AKShare 接口无返回且无当日缓存")
 
     name_col = _find_col(df, ["名称", "股票名称"])
     a_code_col = _find_col(df, ["A股代码", "A代码"])

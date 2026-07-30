@@ -5,6 +5,8 @@ from typing import Annotated
 
 import pandas as pd
 
+from tradingagents.utils.time_utils import now as _cn_now, CN_TZ
+
 SavePathType = Annotated[str, "File path to save data. If None, data is not saved."]
 
 # Tickers can contain letters, digits, dot, dash, underscore, caret
@@ -73,9 +75,9 @@ def is_cache_fresh(cache_path: str, ticker: str) -> bool:
     else:
         close_h, close_m = _MARKET_CLOSE["us"]
 
-    now = datetime.now()
+    now = _cn_now()
     today_close = now.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-    mtime = datetime.fromtimestamp(os.path.getmtime(cache_path))
+    mtime = datetime.fromtimestamp(os.path.getmtime(cache_path), tz=CN_TZ)
 
     if now >= today_close and mtime < today_close:
         return False  # stale: written during trading hours

@@ -31,6 +31,7 @@ from .stockstats_utils import (
     _clean_dataframe,
 )
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import today_str, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -116,9 +117,9 @@ def _load_ohlcv_baostock(symbol: str, curr_date: str) -> pd.DataFrame:
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-BaoStock-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-BaoStock-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -133,7 +134,7 @@ def _load_ohlcv_baostock(symbol: str, curr_date: str) -> pd.DataFrame:
             bs_code,
             "date,open,high,low,close,volume",
             start_date="2020-01-01",
-            end_date=datetime.now().strftime("%Y-%m-%d"),
+            end_date=today_str(),
             frequency="d",
             adjustflag="2",
         )
@@ -191,7 +192,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: BaoStock\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
     return header + csv_string
 
 
@@ -280,7 +281,7 @@ def get_fundamentals(
     bs = _get_bs()
     bs_code = a_share_to_baostock_symbol(ticker)
     if curr_date is None:
-        curr_date = datetime.now().strftime("%Y-%m-%d")
+        curr_date = today_str()
 
     quarters = _recent_quarters(curr_date)
     result: dict = {}
@@ -340,7 +341,7 @@ def get_balance_sheet(
     bs = _get_bs()
     bs_code = a_share_to_baostock_symbol(ticker)
     if curr_date is None:
-        curr_date = datetime.now().strftime("%Y-%m-%d")
+        curr_date = today_str()
 
     quarters = _recent_quarters(curr_date, n=8 if freq == "annual" else 4)
     if freq == "annual":
@@ -365,7 +366,7 @@ def get_balance_sheet(
     header = f"# Balance Sheet for {ticker.upper()}\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: BaoStock\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
     return header + result_df.to_string(max_rows=20, max_cols=15)
 
 
@@ -378,7 +379,7 @@ def get_cashflow(
     bs = _get_bs()
     bs_code = a_share_to_baostock_symbol(ticker)
     if curr_date is None:
-        curr_date = datetime.now().strftime("%Y-%m-%d")
+        curr_date = today_str()
 
     quarters = _recent_quarters(curr_date, n=8 if freq == "annual" else 4)
     if freq == "annual":
@@ -403,7 +404,7 @@ def get_cashflow(
     header = f"# Cash Flow for {ticker.upper()}\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: BaoStock\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
     return header + result_df.to_string(max_rows=20, max_cols=15)
 
 
@@ -416,7 +417,7 @@ def get_income_statement(
     bs = _get_bs()
     bs_code = a_share_to_baostock_symbol(ticker)
     if curr_date is None:
-        curr_date = datetime.now().strftime("%Y-%m-%d")
+        curr_date = today_str()
 
     quarters = _recent_quarters(curr_date, n=8 if freq == "annual" else 4)
     if freq == "annual":
@@ -441,5 +442,5 @@ def get_income_statement(
     header = f"# Income Statement for {ticker.upper()}\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: BaoStock\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
     return header + result_df.to_string(max_rows=20, max_cols=15)

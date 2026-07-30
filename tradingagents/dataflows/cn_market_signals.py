@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from .retry import call_with_retry
+from tradingagents.utils.time_utils import now, today_str_compact
 
 logger = logging.getLogger(__name__)
 
@@ -144,8 +145,8 @@ def _fetch_margin_trading(limit: int | None = None) -> str:
     ak = _get_ak()
     rows = limit or DEFAULT_ROWS
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+    end_date = today_str_compact()
+    start_date = (now() - timedelta(days=30)).strftime("%Y%m%d")
 
     df = _safe_fetch(ak.stock_margin_sse, start_date=start_date, end_date=end_date)
     if df is None:
@@ -223,8 +224,8 @@ def _fetch_top_institutional(limit: int | None = None) -> str:
     ak = _get_ak()
     rows = limit or 15
 
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=7)).strftime("%Y%m%d")
+    end_date = today_str_compact()
+    start_date = (now() - timedelta(days=7)).strftime("%Y%m%d")
 
     df = _safe_fetch(
         ak.stock_lhb_detail_em,

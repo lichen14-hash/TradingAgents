@@ -6,6 +6,7 @@ Usage:
 
 import json
 import logging
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -43,8 +44,6 @@ def get_analysts_for_ticker(ticker: str) -> tuple[str, ...]:
 
 def _make_config() -> dict:
     config = DEFAULT_CONFIG.copy()
-    config["max_debate_rounds"] = 1
-    config["max_risk_discuss_rounds"] = 1
     config["output_language"] = "Chinese"
     return config
 
@@ -210,7 +209,24 @@ def _build_completeness_banner(issues: list[dict]) -> str:
 """
 
 
-def generate_html_report(ticker: str, name: str, final_state: dict, bundle: DataBundle, output_dir: Path | None = None) -> Path:
+def _report_timestamp_suffix(value: str | None = None) -> str:
+    """Return a filesystem-safe timestamp suffix for versioned reports."""
+    if value is None:
+        return datetime.now().strftime("%Y%m%d_%H%M%S")
+    digits = re.sub(r"\D", "", value)
+    if len(digits) >= 14:
+        return f"{digits[:8]}_{digits[8:14]}"
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def generate_html_report(
+    ticker: str,
+    name: str,
+    final_state: dict,
+    bundle: DataBundle,
+    output_dir: Path | None = None,
+    report_timestamp: str | None = None,
+) -> Path:
     from test_output.run_baba_analysis import (
         build_analysis_sections,
         build_data_tables,
@@ -345,9 +361,10 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 </html>"""
 
     safe_name = ticker.replace(".", "_")
+    timestamp = _report_timestamp_suffix(report_timestamp)
     _out_dir = output_dir if output_dir is not None else OUTPUT_DIR
     _out_dir.mkdir(exist_ok=True)
-    output_path = _out_dir / f"{safe_name}_report.html"
+    output_path = _out_dir / f"{safe_name}_{timestamp}_report.html"
     output_path.write_text(html, encoding="utf-8")
     logger.info("HTML report saved to %s", output_path)
     return output_path

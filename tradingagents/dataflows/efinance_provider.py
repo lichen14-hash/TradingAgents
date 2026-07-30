@@ -20,7 +20,7 @@ from stockstats import wrap
 
 from .config import get_config
 from .errors import NoMarketDataError
-from .market_utils import a_share_to_akshare_symbol
+from .market_utils import a_share_to_akshare_symbol, hk_to_akshare_symbol, is_hk_stock
 from .retry import call_with_retry
 from .stockstats_utils import (
     MAX_OHLCV_STALE_DAYS_CN,
@@ -28,6 +28,7 @@ from .stockstats_utils import (
     _clean_dataframe,
 )
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import today_str, today_str_compact, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +59,19 @@ def _get_ef():
 # ---------------------------------------------------------------------------
 
 def _load_ohlcv_efinance(symbol: str, curr_date: str) -> pd.DataFrame:
-    """Fetch and cache efinance A-share daily OHLCV, filtered for look-ahead bias."""
+    """Fetch and cache efinance A-share/HK daily OHLCV, filtered for look-ahead bias."""
     ef = _get_ef()
-    code = a_share_to_akshare_symbol(symbol)
+    if is_hk_stock(symbol):
+        code = hk_to_akshare_symbol(symbol)
+    else:
+        code = a_share_to_akshare_symbol(symbol)
     safe_symbol = safe_ticker_component(symbol)
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-efinance-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-efinance-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -81,7 +85,7 @@ def _load_ohlcv_efinance(symbol: str, curr_date: str) -> pd.DataFrame:
             ef.stock.get_quote_history,
             code,
             beg="20200101",
-            end=datetime.now().strftime("%Y%m%d"),
+            end=today_str_compact(),
         )
         if df is None or df.empty:
             raise NoMarketDataError(symbol, symbol, "efinance returned no data")
@@ -135,7 +139,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: efinance (EastMoney)\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
     return header + csv_string
 
 

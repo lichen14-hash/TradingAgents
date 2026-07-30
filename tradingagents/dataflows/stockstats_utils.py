@@ -11,6 +11,7 @@ from yfinance.exceptions import YFRateLimitError
 from .config import get_config
 from .symbol_utils import NoMarketDataError, normalize_symbol
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import pd_today, today_str
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     curr_date_dt = pd.to_datetime(curr_date)
 
     # Cache uses a fixed window (5y to today) so one file per symbol.
-    today_date = pd.Timestamp.today()
+    today_date = pd_today()
     start_date = today_date - pd.DateOffset(years=5)
     start_str = start_date.strftime("%Y-%m-%d")
     # yfinance ``end`` is EXCLUSIVE; request tomorrow so today's row is included
@@ -201,6 +202,9 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
                     raise NoMarketDataError(symbol, canonical, "No OHLCV data from any vendor") from None
         elif is_hk_stock(canonical):
             _hk_loaders = [
+                ("TuShare-HK", lambda: __import__(
+                    "tradingagents.dataflows.tushare_provider", fromlist=["_load_ohlcv_tushare_hk"]
+                )._load_ohlcv_tushare_hk(canonical, curr_date)),
                 ("HK-AKShare", lambda: __import__(
                     "tradingagents.dataflows.hk_akshare_provider", fromlist=["_load_ohlcv_hk"]
                 )._load_ohlcv_hk(canonical, curr_date)),

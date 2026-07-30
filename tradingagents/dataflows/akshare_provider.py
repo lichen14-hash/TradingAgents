@@ -20,6 +20,7 @@ from stockstats import wrap
 
 from .config import get_config
 from .errors import NoMarketDataError
+from tradingagents.utils.time_utils import today_str, today_str_compact, now_str
 from .market_utils import a_share_to_akshare_symbol, detect_exchange, is_etf
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
@@ -73,9 +74,9 @@ def _load_ohlcv_akshare(symbol: str, curr_date: str) -> pd.DataFrame:
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-AKShare-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-AKShare-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -93,7 +94,7 @@ def _load_ohlcv_akshare(symbol: str, curr_date: str) -> pd.DataFrame:
                     symbol=code,
                     period="daily",
                     start_date="20200101",
-                    end_date=datetime.now().strftime("%Y%m%d"),
+                    end_date=today_str_compact(),
                     adjust="qfq",
                 )
             except Exception as e:
@@ -114,7 +115,7 @@ def _load_ohlcv_akshare(symbol: str, curr_date: str) -> pd.DataFrame:
                 symbol=code,
                 period="daily",
                 start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
+                end_date=today_str_compact(),
                 adjust="qfq",
                 timeout=REQUEST_TIMEOUT,
             )
@@ -161,7 +162,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: AKShare (EastMoney)\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
     return header + csv_string
 
 
@@ -377,7 +378,7 @@ def _format_financial_statement(
     header = f"# {title} for {ticker.upper()}\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: AKShare (EastMoney)\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
 
     return header + df.to_string(max_rows=20, max_cols=15)
 

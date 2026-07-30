@@ -12,6 +12,8 @@ class BundleMetadata(BaseModel):
     date_correction_reason: str = ""
     asset_type: str = "stock"
     collection_timestamp: str = ""
+    analysis_mode: str = "daily"
+    intraday_asof: str = ""
     selected_analysts: list[str] = Field(default_factory=list)
     vendor_config: dict = Field(default_factory=dict)
     bundle_version: str = "1.0"
@@ -21,6 +23,7 @@ class MarketData(BaseModel):
     stock_data: str = ""
     indicators: dict[str, str] = Field(default_factory=dict)
     verified_snapshot: str = ""
+    intraday_snapshot: str = ""
 
 
 class SentimentData(BaseModel):

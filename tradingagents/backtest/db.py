@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = "3"
+_SCHEMA_VERSION = "4"
 
 _DDL = """\
 CREATE TABLE IF NOT EXISTS predictions (
@@ -81,6 +81,36 @@ CREATE TABLE IF NOT EXISTS _meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS evaluation_sessions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at        TEXT    NOT NULL,
+    resolved_count    INTEGER DEFAULT 0,
+    accuracy_before   REAL,
+    accuracy_after    REAL,
+    evaluation_json   TEXT,
+    suggestions_count INTEGER DEFAULT 0,
+    applied_count     INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS optimization_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      INTEGER NOT NULL REFERENCES evaluation_sessions(id),
+    suggestion_id   TEXT    NOT NULL,
+    category        TEXT    NOT NULL,
+    title           TEXT    NOT NULL,
+    description     TEXT,
+    impact          TEXT    DEFAULT 'medium',
+    action_json     TEXT,
+    status          TEXT    NOT NULL DEFAULT 'pending',
+    applied_at      TEXT,
+    verified        INTEGER,
+    verified_at     TEXT,
+    verify_note     TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_opt_session ON optimization_suggestions(session_id);
+CREATE INDEX IF NOT EXISTS idx_opt_status  ON optimization_suggestions(status);
 """
 
 

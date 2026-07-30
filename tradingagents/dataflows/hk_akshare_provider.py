@@ -25,6 +25,7 @@ from .market_utils import hk_to_akshare_symbol
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import today_str, today_str_compact, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,9 @@ def _load_ohlcv_hk(symbol: str, curr_date: str) -> pd.DataFrame:
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-AKShare-HK-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-AKShare-HK-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -87,7 +88,7 @@ def _load_ohlcv_hk(symbol: str, curr_date: str) -> pd.DataFrame:
                 symbol=code,
                 period="daily",
                 start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
+                end_date=today_str_compact(),
                 adjust="qfq",
             )
         except Exception as e:
@@ -130,7 +131,8 @@ def get_stock_data(
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ) -> str:
     """Get OHLCV stock data from AKShare for HK stocks."""
-    data = _load_ohlcv_hk(symbol, end_date)
+    from .stockstats_utils import load_ohlcv
+    data = load_ohlcv(symbol, end_date)
 
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
@@ -152,7 +154,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: AKShare HK (EastMoney/Sina)\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
     return header + csv_string
 
 
@@ -168,6 +170,7 @@ def get_indicators(
 ) -> str:
     """Compute technical indicators from AKShare HK OHLCV data."""
     from dateutil.relativedelta import relativedelta
+    from .stockstats_utils import load_ohlcv
 
     best_ind_params = {
         "close_50_sma": "50 SMA: medium-term trend indicator.",
@@ -194,7 +197,7 @@ def get_indicators(
     curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     before = curr_date_dt - relativedelta(days=look_back_days)
 
-    data = _load_ohlcv_hk(symbol, curr_date)
+    data = load_ohlcv(symbol, curr_date)
     df = wrap(data)
     df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
     df[indicator]
@@ -443,7 +446,7 @@ def _format_hk_financial(
     header = f"# {title} for {ticker.upper()} (Hong Kong)\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: AKShare (EastMoney)\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
     return header + body
 
 

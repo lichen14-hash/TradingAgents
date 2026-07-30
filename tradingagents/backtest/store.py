@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .db import BacktestDB
+from tradingagents.utils.time_utils import now as _cn_now
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _RATING_TO_NUMERIC = {
 
 
 def _determine_session(ticker: str) -> str:
-    now = datetime.now()
+    now = _cn_now()
     hour, minute = now.hour, now.minute
     t = hour * 60 + minute
     suffix = ticker.upper()

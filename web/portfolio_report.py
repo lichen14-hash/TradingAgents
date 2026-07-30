@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tradingagents.utils.time_utils import now_str
+
 
 _PORTFOLIO_HTML_TEMPLATE = """\
 <!DOCTYPE html>
@@ -120,7 +125,7 @@ def render_portfolio_report(
     advice_html = _markdown_to_html(advice_markdown)
 
     html = _PORTFOLIO_HTML_TEMPLATE
-    html = html.replace("{timestamp}", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    html = html.replace("{timestamp}", now_str())
     html = html.replace("{stock_count}", str(len(holdings)))
     html = html.replace("{model}", _html.escape(model or "N/A"))
     html = html.replace("{holdings_rows}", "\n        ".join(rows))

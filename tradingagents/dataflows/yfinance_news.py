@@ -8,6 +8,7 @@ from dateutil.relativedelta import relativedelta
 
 from .config import get_config
 from .stockstats_utils import yf_retry
+from tradingagents.utils.time_utils import now as _cn_now
 
 
 def _extract_article_data(article: dict) -> dict:
@@ -67,7 +68,7 @@ def _in_news_window(pub_date, start_dt, end_dt) -> bool:
     if pub_date is not None:
         naive = pub_date.replace(tzinfo=None) if hasattr(pub_date, "replace") else pub_date
         return start_dt <= naive <= end_dt + relativedelta(days=1)
-    return end_dt >= datetime.now() - relativedelta(days=1)
+    return end_dt >= _cn_now().replace(tzinfo=None) - relativedelta(days=1)
 
 
 def get_news_yfinance(

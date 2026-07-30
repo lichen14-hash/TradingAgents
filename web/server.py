@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dotenv import find_dotenv, load_dotenv
 load_dotenv(find_dotenv(usecwd=True))
 
+from tradingagents.utils.time_utils import now_str, now_timestamp_str, today_str as cn_today_str
+
 from tradingagents.dataflows.market_utils import detect_exchange, is_etf, is_hk_stock, normalize_hk_symbol
 from tradingagents.dataflows.utils import safe_ticker_component
 
@@ -61,16 +63,17 @@ class TaskInfo:
     html_path: str = ""
     pdf_path: str = ""
     batch_id: str = ""
-    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    created_at: str = field(default_factory=lambda: now_str())
     cancelled: bool = False
     position: Any = None
+    intraday: bool = False
 
 
 @dataclass
 class BatchInfo:
     batch_id: str
     task_ids: list[str]
-    created_at: str = field(default_factory=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    created_at: str = field(default_factory=lambda: now_str())
 
 
 tasks: dict[str, TaskInfo] = {}
@@ -129,6 +132,7 @@ class AnalyzeRequest(BaseModel):
     ticker: str
     date: str | None = None
     position: PositionInfo | None = None
+    intraday: bool = False
 
 
 class BatchItem(BaseModel):
@@ -140,6 +144,7 @@ class BatchAnalyzeRequest(BaseModel):
     tickers: list[str] | None = None
     items: list[BatchItem] | None = None
     date: str | None = None
+    intraday: bool = False
 
 
 def _normalize_ticker(raw: str) -> tuple[str, str]:
@@ -260,7 +265,7 @@ def _emit(task: TaskInfo, stage: str, message: str):
     event = {
         "stage": stage,
         "message": message,
-        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "timestamp": now_timestamp_str(),
     }
     task.event_log.append(event)
     task.progress.put(event)
@@ -277,7 +282,7 @@ def _check_cancelled(task: TaskInfo):
         raise _TaskCancelled(f"{task.ticker} 任务已被用户取消")
 
 
-def _collect_data(task: TaskInfo):
+def _collect_data(task: TaskInfo, shared_data: dict | None = None):
     """Phase 1: Data collection + completeness validation. Returns bundle on success."""
     name = task.name if task.name != task.ticker else _resolve_name(task.ticker)
     task.name = name
@@ -297,12 +302,14 @@ def _collect_data(task: TaskInfo):
     _check_cancelled(task)
 
     task.status = "collecting"
-    _emit(task, "collecting", "正在采集市场数据...")
+    _emit(task, "collecting", "正在采集盘中与市场数据..." if task.intraday else "正在采集市场数据...")
     collector = DataCollector(config)
     bundle, filepath = collector.collect_and_save(
         task.ticker, task.date,
         selected_analysts=analysts,
         save_dir=OUTPUT_DIR,
+        shared_data=shared_data,
+        intraday=task.intraday,
     )
     _emit(task, "data_ready", "数据采集完成")
 
@@ -443,7 +450,10 @@ def _run_llm_analysis(task: TaskInfo, bundle):
         _emit(task, "generating", "正在生成报告...")
 
         from run_batch_analysis import generate_html_report
-        html_path = generate_html_report(task.ticker, task.name, final_state, bundle)
+        html_path = generate_html_report(
+            task.ticker, task.name, final_state, bundle,
+            report_timestamp=task.created_at,
+        )
         task.html_path = str(html_path)
 
         # Phase 4: Convert to PDF
@@ -503,12 +513,55 @@ def _cancel_remaining(batch_id: str, task_ids: list[str], failed_tid: str, reaso
     )
 
 
-def _run_batch(batch_id: str, task_ids: list[str]):
-    """两阶段批量执行：先全部采集，再全部分析。"""
-    # 阶段1：并发采集所有股票数据
+def _run_batch_impl(batch_id: str, task_ids: list[str]):
+    """两阶段批量执行：先预获取通用数据，再并发采集个股数据，最后并发LLM分析。"""
+    from tradingagents.datacollector import DataCollector
+    from tradingagents.dataflows.config import set_config
+    from tradingagents.dataflows.market_utils import is_a_share as _is_a, is_hk_stock as _is_hk
+
+    # --- 阶段0：按市场类型分组，预获取共享数据 ---
+    config = _make_config()
+    set_config(config)
+    collector = DataCollector(config)
+
+    # 确定 trade_date（批量任务同一日期）
+    first_task = tasks[task_ids[0]]
+    trade_date = first_task.date
+
+    for tid in task_ids:
+        task = tasks.get(tid)
+        if task and task.status == "pending":
+            task.status = "collecting"
+            _emit(task, "collecting", "正在预获取共享数据...")
+
+    # 分组
+    a_share_tids = [tid for tid in task_ids if _is_a(tasks[tid].ticker)]
+    hk_tids = [tid for tid in task_ids if _is_hk(tasks[tid].ticker)]
+    us_tids = [tid for tid in task_ids if tid not in a_share_tids and tid not in hk_tids]
+
+    shared_map: dict[str, dict | None] = {}  # tid -> shared_data
+    try:
+        shared_a = collector.collect_shared_data(trade_date, "a_share") if a_share_tids else None
+        shared_hk = collector.collect_shared_data(trade_date, "hk") if hk_tids else None
+        shared_us = collector.collect_shared_data(trade_date, "us") if us_tids else None
+    except Exception as exc:
+        logger.warning("Shared data pre-fetch failed: %s, falling back to per-stock", exc)
+        shared_a = shared_hk = shared_us = None
+
+    for tid in a_share_tids:
+        shared_map[tid] = shared_a
+    for tid in hk_tids:
+        shared_map[tid] = shared_hk
+    for tid in us_tids:
+        shared_map[tid] = shared_us
+
+    # --- 阶段1：并发采集所有股票数据（传入共享数据）---
     bundles: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
-        futures = {pool.submit(_collect_data, tasks[tid]): tid for tid in task_ids}
+        futures = {
+            pool.submit(_collect_data, tasks[tid], shared_map.get(tid)): tid
+            for tid in task_ids
+        }
         for future in as_completed(futures):
             tid = futures[future]
             try:
@@ -538,12 +591,28 @@ def _run_batch(batch_id: str, task_ids: list[str]):
 
     logger.info("Batch %s: all %d collections succeeded, starting LLM analysis", batch_id, len(task_ids))
 
-    # 阶段2：全部采集成功，并发LLM分析
+    # --- 阶段2：全部采集成功，并发LLM分析 ---
     with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
         futures = [pool.submit(_run_llm_analysis, tasks[tid], bundles[tid]) for tid in task_ids]
         # 等待所有分析完成（各自处理异常）
         for f in futures:
             f.result()  # propagate won't crash; _run_llm_analysis catches internally
+
+
+def _run_batch(batch_id: str, task_ids: list[str]):
+    """Run a batch with top-level failure handling so tasks never hang pending."""
+    try:
+        _run_batch_impl(batch_id, task_ids)
+    except Exception as exc:
+        logger.exception("Unhandled batch failure for %s", batch_id)
+        message = f"批量任务执行异常: {exc}"
+        for tid in task_ids:
+            task = tasks.get(tid)
+            if task and task.status not in ("done", "failed", "cancelled"):
+                task.status = "failed"
+                task.error = message
+                _emit(task, "error", message)
+
 
 
 def _convert_to_pdf(html_path: str, pdf_path: str):
@@ -594,55 +663,79 @@ def _extract_signal(decision: str) -> str:
 # History scanner — recover past reports on startup
 # ---------------------------------------------------------------------------
 
+def _ticker_from_report_stem(stem: str) -> str:
+    """Infer ticker from old/new report file stems.
+
+    Supports both legacy ``002602_SZ_report`` and versioned
+    ``002602_SZ_20260723_010932_report`` filenames.
+    """
+    base = stem[:-7] if stem.endswith("_report") else stem
+    m = re.match(r"^(.+)_\d{8}_\d{6}$", base)
+    if m:
+        base = m.group(1)
+    parts = base.rsplit("_", 1)
+    if len(parts) == 2 and parts[1] in {"SS", "SZ", "HK"}:
+        return f"{parts[0]}.{parts[1]}"
+    return base.replace("_", ".")
+
+
 def _scan_history():
     """Scan test_output/ for existing report files and populate task list."""
     for pdf in sorted(OUTPUT_DIR.glob("*_report.pdf"), key=lambda p: p.stat().st_mtime, reverse=True):
-        stem = pdf.stem.replace("_report", "")
-        ticker = stem.replace("_", ".")
-        html = pdf.with_suffix("").with_name(pdf.stem + ".html")
+        stem = pdf.stem
+        history_key = stem[:-7] if stem.endswith("_report") else stem
+        html = pdf.with_suffix(".html")
 
-        task_id = f"hist-{stem}"
+        task_id = f"hist-{history_key}"
         if task_id in tasks:
             continue
 
-        signal = ""
-        state_candidates = [
-            OUTPUT_DIR / f"{ticker}_final_state.json",
-            OUTPUT_DIR / f"{stem}_final_state.json",
-        ]
-        state_file = None
-        for sc in state_candidates:
-            if sc.exists():
-                if state_file is None or sc.stat().st_mtime > state_file.stat().st_mtime:
-                    state_file = sc
-        if state_file is None:
-            candidates = sorted(
-                OUTPUT_DIR.glob(f"{ticker}_*_latest.json"),
-                key=lambda p: p.stat().st_mtime, reverse=True,
-            )
-            if candidates:
-                state_file = candidates[0]
-        if state_file is not None and state_file.exists():
-            try:
-                data = json.loads(state_file.read_text(encoding="utf-8"))
-                decision = data.get("final_trade_decision", "")
-                signal = _extract_signal(decision)
-            except Exception:
-                pass
-
+        ticker = _ticker_from_report_stem(stem)
         name = ticker
+        signal = ""
+        html_text = ""
         if html.exists():
             try:
                 html_text = html.read_text(encoding="utf-8")
-                if not signal:
-                    signal = _extract_signal(html_text)
-                m = re.search(r'<meta\s+name="stock-name"\s+content="([^"]+)"', html_text[:2000])
+                signal = _extract_signal(html_text)
+                m = re.search(r'<meta\s+name="stock-ticker"\s+content="([^"]+)"', html_text[:3000])
+                if m:
+                    ticker = m.group(1)
+                m = re.search(r'<meta\s+name="stock-name"\s+content="([^"]+)"', html_text[:3000])
                 if m and m.group(1) != ticker:
                     name = m.group(1)
             except Exception:
                 pass
         if name == ticker:
             name = ticker
+
+        if not signal:
+            safe = safe_ticker_component(ticker)
+            state_candidates = [
+                OUTPUT_DIR / f"{ticker}_final_state.json",
+                OUTPUT_DIR / f"{safe}_final_state.json",
+                OUTPUT_DIR / f"{stem.replace('_report', '')}_final_state.json",
+            ]
+            state_file = None
+            for sc in state_candidates:
+                if sc.exists():
+                    if state_file is None or sc.stat().st_mtime > state_file.stat().st_mtime:
+                        state_file = sc
+            if state_file is None:
+                ticker_prefix = ticker.replace(".", "_")
+                candidates = sorted(
+                    OUTPUT_DIR.glob(f"{ticker_prefix}_*_latest.json"),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                if candidates:
+                    state_file = candidates[0]
+            if state_file is not None and state_file.exists():
+                try:
+                    data = json.loads(state_file.read_text(encoding="utf-8"))
+                    decision = data.get("final_trade_decision", "")
+                    signal = _extract_signal(decision)
+                except Exception:
+                    pass
 
         t = TaskInfo(
             task_id=task_id,
@@ -813,7 +906,7 @@ async def submit_analysis(req: AnalyzeRequest):
     err = _validate_ticker(req.ticker.strip(), ticker)
     if err:
         raise HTTPException(400, err)
-    date = req.date or datetime.now().strftime("%Y-%m-%d")
+    date = req.date or cn_today_str()
 
     with _tasks_lock:
         for t in tasks.values():
@@ -822,14 +915,17 @@ async def submit_analysis(req: AnalyzeRequest):
 
     task_id = uuid.uuid4().hex[:12]
     name = _sina_name_lookup(ticker) or code
-    task = TaskInfo(task_id=task_id, ticker=ticker, name=name, date=date, position=req.position)
+    task = TaskInfo(
+        task_id=task_id, ticker=ticker, name=name, date=date,
+        position=req.position, intraday=req.intraday,
+    )
 
     with _tasks_lock:
         tasks[task_id] = task
 
     _work_queue.put(task_id)
 
-    return {"task_id": task_id, "ticker": ticker, "name": name}
+    return {"task_id": task_id, "ticker": ticker, "name": name, "intraday": req.intraday}
 
 
 @app.post("/api/analyze/batch")
@@ -846,7 +942,7 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
     if len(raw_items) > 10:
         raise HTTPException(400, "批量分析最多支持 10 个股票代码")
 
-    date = req.date or datetime.now().strftime("%Y-%m-%d")
+    date = req.date or cn_today_str()
 
     # Normalize, deduplicate, and validate all tickers first
     errors = []
@@ -888,10 +984,11 @@ async def submit_batch_analysis(req: BatchAnalyzeRequest):
         task = TaskInfo(
             task_id=task_id, ticker=ticker, name=name,
             date=date, batch_id=batch_id, position=pos,
+            intraday=req.intraday,
         )
         with _tasks_lock:
             tasks[task_id] = task
-        task_list.append({"task_id": task_id, "ticker": ticker, "name": name})
+        task_list.append({"task_id": task_id, "ticker": ticker, "name": name, "intraday": req.intraday})
 
     batch = BatchInfo(batch_id=batch_id, task_ids=[t["task_id"] for t in task_list])
     with _tasks_lock:
@@ -933,6 +1030,7 @@ async def get_batch_status(batch_id: str):
             "stage_message": last_stage,
             "has_pdf": bool(t.pdf_path and Path(t.pdf_path).exists()),
             "has_html": bool(t.html_path and Path(t.html_path).exists()),
+            "intraday": t.intraday,
         })
 
     done_count = sum(1 for r in result if r["status"] in ("done", "failed", "cancelled"))
@@ -978,7 +1076,7 @@ async def progress_stream(task_id: str):
                     final = {
                         "stage": stage,
                         "message": msg,
-                        "timestamp": datetime.now().strftime("%H:%M:%S"),
+                        "timestamp": now_timestamp_str(),
                     }
                     yield f"data: {json.dumps(final, ensure_ascii=False)}\n\n"
                     break
@@ -1003,6 +1101,7 @@ async def list_tasks():
                 "has_html": bool(t.html_path and Path(t.html_path).exists()),
                 "created_at": t.created_at,
                 "batch_id": t.batch_id,
+                "intraday": t.intraday,
             })
     return result
 
@@ -1177,7 +1276,7 @@ async def generate_portfolio_advice(batch_id: str):
     )
 
     # Save report
-    report_name = f"portfolio_advice_{batch_id[:8]}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+    report_name = f"portfolio_advice_{batch_id[:8]}_{now_str('%Y%m%d_%H%M%S')}.html"
     report_path = OUTPUT_DIR / report_name
     report_path.write_text(html_content, encoding="utf-8")
     logger.info("Portfolio advice report saved: %s", report_path)

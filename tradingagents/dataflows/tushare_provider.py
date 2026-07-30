@@ -23,6 +23,7 @@ from .market_utils import a_share_to_akshare_symbol, is_etf
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import today_str, today_str_compact, now_str, now
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +68,46 @@ def _to_ts_code(ticker: str) -> str:
     return f"{code}.SZ"
 
 
+def _apply_qfq_factors(price_df: pd.DataFrame, adj_df: pd.DataFrame) -> pd.DataFrame:
+    """Apply front-adjustment (qfq) factors to raw OHLC prices.
+
+    qfq uses the *latest* adjustment factor as the base:
+    ``adjusted = raw * factor / latest_factor``. Volume is left untouched.
+    """
+    adj = adj_df[["trade_date", "adj_factor"]].copy()
+    merged = price_df.merge(adj, on="trade_date", how="left")
+    merged = merged.sort_values("trade_date").reset_index(drop=True)
+    merged["adj_factor"] = merged["adj_factor"].ffill().bfill()
+    latest_factor = float(merged["adj_factor"].iloc[-1])
+    for col in ("open", "high", "low", "close"):
+        if col in merged.columns:
+            merged[col] = merged[col] * merged["adj_factor"] / latest_factor
+    return merged
+
+
 def _load_ohlcv_tushare(symbol: str, curr_date: str) -> pd.DataFrame:
-    """Fetch and cache TuShare A-share daily OHLCV data."""
-    pro = _get_pro()
+    """Fetch and cache TuShare A-share/ETF daily OHLCV data (前复权/qfq).
+
+    Equities use ``ts.pro_bar(adj='qfq')`` which adjusts correctly. ETFs are
+    handled specially: ``pro_bar`` silently returns UN-adjusted prices for
+    ``asset='FD'`` (its qfq output is byte-identical to the raw output), which
+    turns a fund share split into a massive fake gap (e.g. 515880.SS 2026-07-03
+    close 1.58 → 07-06 close 0.76, -52%) that poisons every downstream
+    moving-average / trend indicator. So for ETFs we fetch raw ``pro.fund_daily``
+    plus the ``pro.fund_adj`` factor table and apply qfq manually. If the
+    factor table is unavailable, we raise so the routing layer falls back to
+    AKShare, which already fetches qfq-adjusted data.
+    """
+    import tushare as ts
+    pro = _get_pro()  # also ensures TUSHARE_TOKEN is set before calling pro_bar
     ts_code = _to_ts_code(symbol)
     safe_symbol = safe_ticker_component(symbol)
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-TuShare-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-TuShare-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -87,22 +117,92 @@ def _load_ohlcv_tushare(symbol: str, curr_date: str) -> pd.DataFrame:
             data = cached
 
     if data is None:
+        end_date = today_str_compact()
         if is_etf(symbol):
-            df = call_with_retry(
-                pro.fund_daily,
-                ts_code=ts_code,
-                start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
+            # pro_bar's qfq is broken for funds, so fetch raw fund_daily and
+            # apply the fund_adj factors ourselves.
+            raw = call_with_retry(
+                pro.fund_daily, ts_code=ts_code,
+                start_date="20200101", end_date=end_date,
             )
+            if raw is None or raw.empty:
+                raise NoMarketDataError(symbol, symbol, "TuShare fund_daily returned no data")
+            adj = call_with_retry(
+                pro.fund_adj, ts_code=ts_code,
+                start_date="20200101", end_date=end_date,
+            )
+            if adj is None or adj.empty:
+                raise NoMarketDataError(symbol, symbol, "TuShare fund_adj returned no factors")
+            df = _apply_qfq_factors(raw, adj)
         else:
             df = call_with_retry(
-                pro.daily,
+                ts.pro_bar,
                 ts_code=ts_code,
+                asset="E",
+                adj="qfq",
                 start_date="20200101",
-                end_date=datetime.now().strftime("%Y%m%d"),
+                end_date=end_date,
             )
+            if df is None or df.empty:
+                raise NoMarketDataError(symbol, symbol, "TuShare returned no adjusted data")
+
+        df = df.rename(columns={
+            "trade_date": "Date",
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "vol": "Volume",
+        })
+
+        keep = [c for c in ("Date", "Open", "High", "Low", "Close", "Volume") if c in df.columns]
+        data = df[keep].copy()
+        data["Date"] = pd.to_datetime(data["Date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+        data = data.sort_values("Date").reset_index(drop=True)
+        data.to_csv(cache_file, index=False, encoding="utf-8")
+
+    data = _clean_dataframe(data)
+    curr_date_dt = pd.to_datetime(curr_date)
+    data = data[data["Date"] <= curr_date_dt]
+    _assert_ohlcv_not_stale(data, curr_date, symbol, symbol, max_stale_days=MAX_OHLCV_STALE_DAYS_CN)
+    return data
+
+
+def _load_ohlcv_tushare_hk(symbol: str, curr_date: str) -> pd.DataFrame:
+    """Fetch and cache TuShare HK stock daily OHLCV data.
+
+    Uses ``pro.hk_daily`` which updates on the same day after market close.
+    Rate limit: ~1 call/min for standard accounts.
+    """
+    pro = _get_pro()
+    # Tushare HK uses code like '09988.HK' directly
+    ts_code = symbol.upper()
+    if not ts_code.endswith(".HK"):
+        ts_code = ts_code + ".HK"
+    safe_symbol = safe_ticker_component(symbol)
+    config = get_config()
+
+    os.makedirs(config["data_cache_dir"], exist_ok=True)
+    today_str_val = today_str()
+    cache_file = os.path.join(
+        config["data_cache_dir"], f"{safe_symbol}-TuShare-HK-daily-{today_str_val}.csv"
+    )
+
+    data = None
+    if is_cache_fresh(cache_file, symbol):
+        cached = pd.read_csv(cache_file, on_bad_lines="skip", encoding="utf-8")
+        if not cached.empty and "Close" in cached.columns:
+            data = cached
+
+    if data is None:
+        df = call_with_retry(
+            pro.hk_daily,
+            ts_code=ts_code,
+            start_date="20200101",
+            end_date=today_str_compact(),
+        )
         if df is None or df.empty:
-            raise NoMarketDataError(symbol, symbol, "TuShare returned no data")
+            raise NoMarketDataError(symbol, symbol, "TuShare HK returned no data")
 
         df = df.rename(columns={
             "trade_date": "Date",
@@ -154,7 +254,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: TuShare\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
     return header + csv_string
 
 
@@ -211,7 +311,7 @@ def _recent_period_ends(curr_date: str | None, n: int = 4) -> list[str]:
     if curr_date:
         ref = datetime.strptime(curr_date, "%Y-%m-%d")
     else:
-        ref = datetime.now()
+        ref = now()
     quarters = []
     y, m = ref.year, ref.month
     qm = ((m - 1) // 3) * 3 + 3
@@ -269,10 +369,10 @@ def get_fundamentals(
             logger.debug("fina_indicator failed for %s period %s", ticker, period)
 
     try:
-        trade_date = datetime.now().strftime("%Y%m%d")
+        trade_date = today_str_compact()
         df = call_with_retry(pro.daily_basic, ts_code=ts_code, trade_date=trade_date)
         if df is None or df.empty:
-            df = call_with_retry(pro.daily_basic, ts_code=ts_code, start_date=(datetime.now().strftime("%Y%m") + "01"), end_date=trade_date)
+            df = call_with_retry(pro.daily_basic, ts_code=ts_code, start_date=(today_str_compact()[:6] + "01"), end_date=trade_date)
             if df is not None and not df.empty:
                 df = df.sort_values("trade_date", ascending=False).head(1)
         if df is not None and not df.empty:
@@ -320,7 +420,7 @@ def get_fundamentals(
 
     header = f"# Fundamentals for {ticker.upper()}\n"
     header += "# Data source: TuShare\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
     return header + json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -356,7 +456,7 @@ def _fetch_financial_statement(
     header = f"# {title} for {ticker.upper()}\n"
     header += f"# Frequency: {freq}\n"
     header += "# Data source: TuShare\n"
-    header += f"# Retrieved: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Retrieved: {now_str()}\n\n"
 
     return header + df.to_string(max_rows=20, max_cols=15)
 
@@ -403,12 +503,12 @@ def get_insider_transactions(
     lines.append("# Source: TuShare\n\n")
 
     try:
-        start = (datetime.now().year - 1) * 10000 + 101
+        start = (now().year - 1) * 10000 + 101
         df = call_with_retry(
             pro.stk_holdertrade,
             ts_code=ts_code,
             start_date=str(start),
-            end_date=datetime.now().strftime("%Y%m%d"),
+            end_date=today_str_compact(),
         )
         if df is not None and not df.empty:
             lines.append("## Shareholder Trading (Recent 1 Year)\n")

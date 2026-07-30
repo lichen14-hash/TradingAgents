@@ -26,6 +26,7 @@ from .stockstats_utils import (
     _clean_dataframe,
 )
 from .utils import is_cache_fresh, safe_ticker_component
+from tradingagents.utils.time_utils import today_str, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +98,9 @@ def _load_ohlcv_sina(symbol: str, curr_date: str) -> pd.DataFrame:
     config = get_config()
 
     os.makedirs(config["data_cache_dir"], exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str_val = today_str()
     cache_file = os.path.join(
-        config["data_cache_dir"], f"{safe_symbol}-Sina-daily-{today_str}.csv"
+        config["data_cache_dir"], f"{safe_symbol}-Sina-daily-{today_str_val}.csv"
     )
 
     data = None
@@ -164,7 +165,7 @@ def get_stock_data(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(df)}\n"
     header += "# Data source: Sina Finance\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Data retrieved on: {now_str()}\n\n"
 
     return header + csv_string
 

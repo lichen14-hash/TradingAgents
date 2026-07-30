@@ -283,7 +283,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 </div>
 
 <script>
-document.getElementById('date').value = new Date().toISOString().slice(0, 10);
+document.getElementById('date').value = new Date().toLocaleDateString('sv-SE');
 
 document.getElementById('ticker').addEventListener('keydown', e => {
   if (e.key === 'Enter') startAnalysis();
