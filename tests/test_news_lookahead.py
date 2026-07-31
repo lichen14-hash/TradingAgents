@@ -7,8 +7,12 @@ news injected future articles), #993 (empty-after-filter returned a blank body).
 import time
 from datetime import datetime
 
+import pandas as pd
 import pytest
 
+import tradingagents.dataflows.akshare_provider as akshare_provider
+import tradingagents.dataflows.eastmoney as eastmoney
+import tradingagents.dataflows.hk_akshare_provider as hk_akshare_provider
 import tradingagents.dataflows.yfinance_news as ynews
 
 
@@ -77,3 +81,32 @@ def test_global_news_empty_after_filter_is_informative(monkeypatch):
     out = ynews.get_global_news_yfinance("2025-05-09", look_back_days=7, limit=10)
     assert "No global news found" in out
     assert "###" not in out  # no empty article body
+
+
+@pytest.mark.unit
+def test_akshare_news_helpers_share_string_storage_lock():
+    assert eastmoney._string_storage_lock is akshare_provider._string_storage_lock
+    assert hk_akshare_provider._string_storage_lock is akshare_provider._string_storage_lock
+
+
+@pytest.mark.unit
+def test_sina_comments_protects_string_storage(monkeypatch):
+    class FakeAk:
+        @staticmethod
+        def stock_news_em(*, symbol):
+            assert symbol == "300760"
+            assert pd.options.mode.string_storage == "python"
+            return pd.DataFrame({
+                "新闻标题": ["Unicode 新闻"],
+                "发布时间": ["2026-07-31 10:00:00"],
+                "新闻内容": [r"literal \u escape"],
+            })
+
+    original = pd.options.mode.string_storage
+    monkeypatch.setattr(eastmoney, "_get_ak", lambda: FakeAk())
+    monkeypatch.setattr(eastmoney, "call_with_retry", lambda func, **kwargs: func(**kwargs))
+
+    out = eastmoney.fetch_sina_finance_comments("300760.SZ")
+
+    assert r"literal \u escape" in out
+    assert pd.options.mode.string_storage == original

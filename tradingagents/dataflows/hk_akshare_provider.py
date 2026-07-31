@@ -19,13 +19,15 @@ from typing import Annotated
 import pandas as pd
 from stockstats import wrap
 
+from tradingagents.utils.time_utils import now_str, today_str, today_str_compact
+
+from .akshare_provider import _string_storage_lock
 from .config import get_config
 from .errors import NoMarketDataError
 from .market_utils import hk_to_akshare_symbol
 from .retry import call_with_retry
 from .stockstats_utils import MAX_OHLCV_STALE_DAYS_CN, _assert_ohlcv_not_stale, _clean_dataframe
 from .utils import is_cache_fresh, safe_ticker_component
-from tradingagents.utils.time_utils import today_str, today_str_compact, now_str
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,7 @@ def get_indicators(
 ) -> str:
     """Compute technical indicators from AKShare HK OHLCV data."""
     from dateutil.relativedelta import relativedelta
+
     from .stockstats_utils import load_ohlcv
 
     best_ind_params = {
@@ -285,12 +288,13 @@ def get_news(
     code = hk_to_akshare_symbol(ticker)
 
     try:
-        old_setting = pd.options.mode.string_storage
-        pd.options.mode.string_storage = "python"
-        try:
-            df = call_with_retry(ak.stock_news_em, symbol=code)
-        finally:
-            pd.options.mode.string_storage = old_setting
+        with _string_storage_lock:
+            old_setting = pd.options.mode.string_storage
+            pd.options.mode.string_storage = "python"
+            try:
+                df = call_with_retry(ak.stock_news_em, symbol=code)
+            finally:
+                pd.options.mode.string_storage = old_setting
     except Exception as e:
         logger.warning("stock_news_em failed for HK %s: %s", code, e)
         return f"No news available for {ticker} from AKShare."

@@ -40,6 +40,7 @@ __all__ = [
     "get_prediction_markets",
     "get_verified_market_snapshot",
     "build_instrument_context",
+    "build_market_status_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
     "get_language_instruction",
@@ -368,10 +369,55 @@ def _resolve_hk_identity_akshare(normalized: str) -> dict:
     return identity
 
 
+def build_market_status_context(market_status: Mapping[str, Any] | None) -> str:
+    """Render verified market/risk-warning status as a hard prompt constraint."""
+
+    if not market_status:
+        return ""
+    status = str(market_status.get("risk_warning_status", "unknown"))
+    name = str(market_status.get("security_name", "") or "")
+    effective_date = str(market_status.get("effective_date", "") or "")
+    price_limit = market_status.get("price_limit_ratio", 0.0)
+    trading_status = str(market_status.get("trading_status", "unknown") or "unknown")
+    verified_at = str(market_status.get("verified_at", "") or "")
+    sources = market_status.get("sources", []) or []
+    confidence = market_status.get("confidence", 0.0)
+    conflicts = market_status.get("conflicts", []) or []
+
+    lines = [
+        "Verified market status for the analysis date (deterministic fact, not model inference):",
+        f"- Security name on/for the analysis date: {name or 'N/A'}",
+        f"- Risk-warning/ST status: {status}",
+        f"- Status effective date: {effective_date or 'N/A'}",
+        f"- Price limit ratio: {price_limit}%" if price_limit else "- Price limit ratio: N/A",
+        f"- Trading status: {trading_status}",
+        f"- Verified at: {verified_at or 'N/A'}",
+        f"- Sources: {', '.join(str(s) for s in sources) if sources else 'N/A'}",
+        f"- Confidence: {confidence}",
+    ]
+    if conflicts:
+        lines.append("- Source conflicts: " + "; ".join(str(c) for c in conflicts))
+    lines.append(
+        "CRITICAL FACT CONSTRAINT: Do not infer, alter, or override the verified "
+        "risk-warning/ST status from historical news, financial performance, or prior knowledge. "
+        "Historical ST mentions must be described as historical only. If evidence conflicts with "
+        "this verified status, explicitly report a data conflict instead of changing the status."
+    )
+    if status == "normal":
+        lines.append(
+            "Because the verified status is normal, do not describe the instrument as currently ST/*ST, "
+            "do not apply ST-only 5% price-limit or one-word limit-down assumptions, and do not treat "
+            "delisting-risk-warning removal as a pending catalyst unless a newer verified source says so."
+        )
+    return "\n".join(lines)
+
+
+
 def build_instrument_context(
     ticker: str,
     asset_type: str = "stock",
-    identity: Mapping[str, str] | None = None,
+    identity: Mapping[str, Any] | None = None,
+    market_status: Mapping[str, Any] | None = None,
 ) -> str:
     """Describe the exact instrument so agents preserve identity and ticker.
 
@@ -410,6 +456,10 @@ def build_instrument_context(
             "result explicitly disproves this resolved identity."
         )
 
+    status_context = build_market_status_context(market_status)
+    if status_context:
+        context += "\n\n" + status_context
+
     if is_crypto:
         context += (
             " Treat it as a crypto asset rather than a company, and do not "
@@ -430,9 +480,16 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     context = state.get("instrument_context")
     if isinstance(context, str) and context.strip():
         return context
+    market_status = None
+    data_bundle = state.get("data_bundle")
+    if isinstance(data_bundle, Mapping):
+        metadata = data_bundle.get("metadata", {})
+        if isinstance(metadata, Mapping):
+            market_status = metadata.get("market_status")
     return build_instrument_context(
         str(state["company_of_interest"]),
         state.get("asset_type", "stock"),
+        market_status=market_status,
     )
 
 

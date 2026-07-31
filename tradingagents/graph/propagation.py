@@ -33,6 +33,12 @@ class Propagator:
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
         """
+        market_status = {}
+        if data_bundle:
+            metadata = data_bundle.get("metadata", {})
+            if isinstance(metadata, dict):
+                market_status = metadata.get("market_status", {}) or {}
+
         return {
             "messages": [("human", company_name)],
             "company_of_interest": company_name,
@@ -42,6 +48,7 @@ class Propagator:
             "past_context": past_context,
             "user_portfolio_context": user_portfolio_context,
             "data_bundle": data_bundle or {},
+            "market_status": market_status,
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",

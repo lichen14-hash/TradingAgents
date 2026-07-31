@@ -13,6 +13,7 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     resolve_instrument_identity,
 )
+from tradingagents.agents.utils.market_status_guard import raise_if_market_status_conflicts
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.datacollector import DataBundle, DataCollector
 from tradingagents.dataflows.config import set_config
@@ -234,7 +235,12 @@ class TradingAgentsGraph:
         if updates:
             self.memory_log.batch_update_with_outcomes(updates)
 
-    def resolve_instrument_context(self, ticker: str, asset_type: str = "stock") -> str:
+    def resolve_instrument_context(
+        self,
+        ticker: str,
+        asset_type: str = "stock",
+        market_status: dict | None = None,
+    ) -> str:
         from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
 
         identity = resolve_instrument_identity(ticker)
@@ -245,7 +251,7 @@ class TradingAgentsGraph:
                 f"均返回失败。请检查网络连接或确认代码是否正确。"
             )
 
-        return build_instrument_context(ticker, asset_type, identity)
+        return build_instrument_context(ticker, asset_type, identity, market_status=market_status)
 
     def collect_data(
         self,
@@ -318,7 +324,14 @@ class TradingAgentsGraph:
             stats = self._backtest_store.get_ticker_stats(company_name)
             if stats:
                 past_context += f"\n\n## Backtest Performance Summary\n{stats}"
-        instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        market_status = None
+        if data_bundle is not None:
+            market_status = data_bundle.metadata.market_status.model_dump()
+        instrument_context = self.resolve_instrument_context(
+            company_name,
+            asset_type,
+            market_status=market_status,
+        )
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
@@ -348,6 +361,9 @@ class TradingAgentsGraph:
             final_state = self.graph.invoke(init_agent_state, **args)
 
         self.curr_state = final_state
+
+        if data_bundle is not None:
+            raise_if_market_status_conflicts(final_state, data_bundle)
 
         self._log_state(trade_date, final_state)
 

@@ -4,26 +4,25 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import platform
 import shutil
 from datetime import datetime, timedelta
-
-from tradingagents.utils.time_utils import now, now_iso, pd_today
 from pathlib import Path
 
 import pandas as pd
 
-from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.competitive_intel import get_competitive_intelligence
+from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
 from tradingagents.dataflows.reddit import fetch_reddit_posts
+from tradingagents.dataflows.st_status_provider import resolve_market_status
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.utils.time_utils import now, now_iso, pd_today
 
 from .constants import (
     ALL_INDICATORS,
@@ -188,11 +187,15 @@ class DataCollector:
         limit = self.config.get("global_news_article_limit", 10)
         if market_type == "a_share":
             from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
+
             shared["global_news"] = _safe_call(
                 "shared_news:global(akshare)", _ak_global_news, trade_date, lookback, limit,
             )
         elif market_type == "hk":
-            from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
+            from tradingagents.dataflows.hk_akshare_provider import (
+                get_global_news as _hk_global_news,
+            )
+
             shared["global_news"] = _safe_call(
                 "shared_news:global(hk_akshare)", _hk_global_news, trade_date, lookback, limit,
             )
@@ -262,6 +265,8 @@ class DataCollector:
         except Exception as e:
             logger.warning("Trading date resolution failed: %s, using original", e)
 
+        market_status = resolve_market_status(ticker, trade_date)
+
         metadata = BundleMetadata(
             ticker=ticker,
             trade_date=trade_date,
@@ -277,6 +282,7 @@ class DataCollector:
                 "tool_vendors": self.config.get("tool_vendors", {}),
             },
             bundle_version=BUNDLE_VERSION,
+            market_status=market_status,
         )
 
         market = self._collect_market_data(
@@ -446,13 +452,17 @@ class DataCollector:
             lookback = self.config.get("global_news_lookback_days", 7)
             limit = self.config.get("global_news_article_limit", 10)
             if is_a_share(ticker):
-                from tradingagents.dataflows.akshare_provider import get_global_news as _ak_global_news
+                from tradingagents.dataflows.akshare_provider import (
+                    get_global_news as _ak_global_news,
+                )
                 global_news = _safe_call(
                     "news:global(akshare)",
                     _ak_global_news, trade_date, lookback, limit,
                 )
             elif is_hk_stock(ticker):
-                from tradingagents.dataflows.hk_akshare_provider import get_global_news as _hk_global_news
+                from tradingagents.dataflows.hk_akshare_provider import (
+                    get_global_news as _hk_global_news,
+                )
                 global_news = _safe_call(
                     "news:global(hk_akshare)",
                     _hk_global_news, trade_date, lookback, limit,
@@ -532,16 +542,18 @@ class DataCollector:
         industry_data = ""
         stock_moneyflow = ""
         if is_a_share(ticker):
+            from tradingagents.dataflows.akshare_provider import get_industry_data as _ak_industry
             from tradingagents.dataflows.tushare_provider import get_moneyflow as _ts_moneyflow
+
             stock_moneyflow = _safe_call(
                 "news:moneyflow", _ts_moneyflow, ticker, trade_date, 5,
             )
-            from tradingagents.dataflows.akshare_provider import get_industry_data as _ak_industry
             industry_data = _safe_call(
                 "news:industry", _ak_industry, ticker, trade_date,
             )
         elif is_hk_stock(ticker):
             from tradingagents.dataflows.hk_akshare_provider import get_hk_industry_info
+
             industry_data = _safe_call(
                 "news:hk_industry", get_hk_industry_info, ticker,
             )
@@ -666,6 +678,24 @@ def validate_bundle_completeness(bundle: DataBundle) -> list[dict]:
             if v and (v.startswith(_UNAVAILABLE_PREFIX) or "data unavailable" in v.lower()):
                 reason = v[len(_UNAVAILABLE_PREFIX):-1] if v.startswith(_UNAVAILABLE_PREFIX) and v.endswith(">") else v[:100]
                 issues.append({"category": category, "field": k, "reason": reason})
+
+    market_status = getattr(bundle.metadata, "market_status", None)
+    if market_status:
+        if market_status.risk_warning_status == "unknown":
+            reason = "; ".join(market_status.conflicts) or "无法验证风险警示/ST状态"
+            issues.append({"category": "市场状态", "field": "risk_warning_status", "reason": reason})
+        if market_status.conflicts:
+            issues.append({
+                "category": "市场状态",
+                "field": "source_conflicts",
+                "reason": "; ".join(market_status.conflicts),
+            })
+        if is_a_share(bundle.metadata.ticker) and not market_status.effective_date:
+            issues.append({
+                "category": "市场状态",
+                "field": "effective_date",
+                "reason": "缺少风险警示状态生效日期",
+            })
 
     if bundle.market:
         _check("行情数据", "stock_data", bundle.market.stock_data)

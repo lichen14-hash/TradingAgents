@@ -30,6 +30,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .input-group input { width: 100%; padding: 10px 14px; border: 2px solid #e0e0e0; border-radius: 8px;
                      font-size: 15px; transition: border-color 0.2s; outline: none; }
 .input-group input:focus { border-color: #667eea; }
+.analysis-options { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.intraday-option { display: inline-flex; align-items: center; gap: 8px; color: #333; font-size: 14px;
+                   font-weight: 600; cursor: pointer; user-select: none; }
+.intraday-option input { width: 17px; height: 17px; accent-color: #667eea; cursor: pointer; }
+.intraday-hint { color: #999; font-size: 12px; }
 .btn-analyze { padding: 10px 28px; background: linear-gradient(135deg, #667eea, #764ba2);
                color: white; border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
                cursor: pointer; transition: opacity 0.2s; white-space: nowrap; }
@@ -150,6 +155,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 .batch-position-card { background: white; border-radius: 12px; padding: 28px;
                        box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-bottom: 24px; display: none; }
 .batch-position-card.active { display: block; }
+.batch-position-card .analysis-options { margin-bottom: 12px; }
 .batch-position-title { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
 .batch-position-table { width: 100%; border-collapse: collapse; }
 .batch-position-table th { text-align: left; padding: 8px 6px; font-size: 13px; color: #666;
@@ -203,6 +209,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
       </div>
       <button class="btn-analyze" id="btnAnalyze" onclick="startAnalysis()">开始分析</button>
     </div>
+    <div class="analysis-options">
+      <label class="intraday-option" for="intraday">
+        <input type="checkbox" id="intraday" onchange="syncIntraday(this.checked)">
+        <span>盘中测试</span>
+      </label>
+      <span class="intraday-hint">启用后采集盘中行情快照，并使用最近一个完整交易日作为日线基准</span>
+    </div>
     <div class="position-toggle" id="positionToggle" onclick="togglePosition()">▸ 持仓信息（选填）</div>
     <div class="position-row" id="positionRow">
       <div class="input-group">
@@ -230,6 +243,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
   <!-- Batch position input (from manual entry or file upload) -->
   <div class="batch-position-card" id="batchPositionCard">
     <div class="batch-position-title">持仓信息录入（选填，不填表示未持有）</div>
+    <div class="analysis-options">
+      <label class="intraday-option" for="batchIntraday">
+        <input type="checkbox" id="batchIntraday" onchange="syncIntraday(this.checked)">
+        <span>按盘中测试模式分析本批持仓</span>
+      </label>
+      <span class="intraday-hint">持仓文件导入和手动批量录入均支持</span>
+    </div>
     <table class="batch-position-table">
       <thead><tr><th>股票代码</th><th>成本价</th><th>持仓数量</th><th>仓位占比 (%)</th></tr></thead>
       <tbody id="batchPositionBody"></tbody>
@@ -319,6 +339,11 @@ let batchPollTimer = null;
 
 // ========== Position helpers ==========
 
+function syncIntraday(checked) {
+  document.getElementById('intraday').checked = checked;
+  document.getElementById('batchIntraday').checked = checked;
+}
+
 function togglePosition() {
   const row = document.getElementById('positionRow');
   const toggle = document.getElementById('positionToggle');
@@ -388,6 +413,7 @@ async function handleFileUpload(input) {
 function showUploadPreview(rows) {
   const card = document.getElementById('batchPositionCard');
   card.classList.add('active');
+  syncIntraday(document.getElementById('intraday').checked);
   document.getElementById('progressCard').classList.remove('active');
   document.getElementById('resultCard').classList.remove('active');
 
@@ -413,6 +439,7 @@ function showUploadPreview(rows) {
 async function startAnalysis() {
   const raw = document.getElementById('ticker').value.trim();
   const date = document.getElementById('date').value;
+  const intraday = document.getElementById('intraday').checked;
   if (!raw) { alert('请输入股票代码'); return; }
 
   const tickers = raw.split(/[,，\s]+/).filter(Boolean);
@@ -441,7 +468,7 @@ async function startAnalysis() {
   const isEtf = /^(510|511|512|513|515|516|517|518|560|561|562|563|588|589|159)\d{3}$/.test(code);
   document.getElementById('step-fundamentals_report').style.display = isEtf ? 'none' : '';
 
-  const body = { ticker, date };
+  const body = { ticker, date, intraday };
   if (position) body.position = position;
 
   try {
@@ -464,7 +491,7 @@ async function startAnalysis() {
     currentTaskId = data.task_id;
     currentBatchId = null;
     document.getElementById('progressTitle').textContent =
-      `开始分析 ${data.name && data.name !== data.ticker ? data.name + ' (' + data.ticker + ')' : data.ticker}...`;
+      `${data.intraday ? '盘中测试：' : '开始分析 '}${data.name && data.name !== data.ticker ? data.name + ' (' + data.ticker + ')' : data.ticker}...`;
     listenProgress(data.task_id);
   } catch (e) {
     alert('请求失败: ' + e.message);
@@ -580,6 +607,7 @@ function showResult(taskId, signal) {
 function showBatchPositionTable(tickers) {
   const card = document.getElementById('batchPositionCard');
   card.classList.add('active');
+  syncIntraday(document.getElementById('intraday').checked);
   document.getElementById('progressCard').classList.remove('active');
   document.getElementById('resultCard').classList.remove('active');
 
@@ -600,6 +628,7 @@ async function submitBatchWithPositions() {
   const card = document.getElementById('batchPositionCard');
   const tickers = card._tickers;
   const date = document.getElementById('date').value;
+  const intraday = document.getElementById('batchIntraday').checked;
 
   const items = tickers.map((t, i) => {
     const cp = document.getElementById(`bp-cost-${i}`).value;
@@ -626,7 +655,7 @@ async function submitBatchWithPositions() {
     const resp = await fetch('/api/analyze/batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items, date }),
+      body: JSON.stringify({ items, date, intraday }),
     });
     if (!resp.ok) {
       const err = await resp.json();
@@ -659,7 +688,8 @@ function showBatchCard(taskList) {
   card.classList.add('active');
 
   const title = document.getElementById('batchTitle');
-  title.textContent = `批量分析进度 (0/${taskList.length} 完成)`;
+  const intraday = taskList.some(t => t.intraday);
+  title.textContent = `${intraday ? '盘中测试 · ' : ''}批量分析进度 (0/${taskList.length} 完成)`;
 
   const list = document.getElementById('batchList');
   list.innerHTML = taskList.map(t => `
@@ -749,13 +779,14 @@ function updateBatchUI(data) {
   const doneCount = data.tasks.filter(t => t.status === 'done').length;
   const failCount = data.tasks.filter(t => t.status === 'failed').length;
   const cancelCount = data.tasks.filter(t => t.status === 'cancelled').length;
-  let titleText = `批量分析进度 (${doneCount}/${data.total} 完成)`;
+  const modePrefix = data.tasks.some(t => t.intraday) ? '盘中测试 · ' : '';
+  let titleText = `${modePrefix}批量分析进度 (${doneCount}/${data.total} 完成)`;
   if (failCount > 0) titleText += ` · ${failCount} 失败`;
   if (cancelCount > 0) titleText += ` · ${cancelCount} 已取消`;
   if (data.done >= data.total) {
-    if (failCount > 0) titleText = `批量分析已取消 (数据源异常)`;
-    else if (cancelCount > 0) titleText = `批量分析已取消 (用户取消)`;
-    else titleText = `批量分析完成 (${doneCount}/${data.total})`;
+    if (failCount > 0) titleText = `${modePrefix}批量分析已取消 (数据源异常)`;
+    else if (cancelCount > 0) titleText = `${modePrefix}批量分析已取消 (用户取消)`;
+    else titleText = `${modePrefix}批量分析完成 (${doneCount}/${data.total})`;
   }
   title.textContent = titleText;
 

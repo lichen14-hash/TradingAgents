@@ -12,6 +12,7 @@ from .schema import (
     DataBundle,
     FundamentalsData,
     MarketData,
+    MarketStatus,
     NewsData,
     SentimentData,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "DataBundle",
     "BundleMetadata",
     "MarketData",
+    "MarketStatus",
     "SentimentData",
     "NewsData",
     "FundamentalsData",

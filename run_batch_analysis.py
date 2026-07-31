@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tradingagents.agents.utils.market_status_guard import raise_if_market_status_conflicts
 from tradingagents.datacollector import DataBundle, DataCollector
 from tradingagents.dataflows.market_utils import is_etf
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -121,13 +122,20 @@ def _check_data_completeness(bundle: DataBundle) -> list[dict]:
     def _check_dict_fields(category: str, d: dict[str, str]):
         unavail = 0
         total = len(d)
-        for k, v in d.items():
+        for _k, v in d.items():
             if not v or "<unavailable" in v.lower() or "data unavailable" in v.lower():
                 unavail += 1
         if total > 0 and unavail == total:
             issues.append({"category": category, "field": f"全部 {total} 项", "status": "unavailable"})
         elif unavail > 0:
             issues.append({"category": category, "field": f"{unavail}/{total} 项", "status": "unavailable"})
+
+    market_status = getattr(bundle.metadata, "market_status", None)
+    if market_status:
+        if market_status.risk_warning_status == "unknown":
+            issues.append({"category": "市场状态", "field": "风险警示/ST状态", "status": "unavailable"})
+        if market_status.conflicts:
+            issues.append({"category": "市场状态", "field": "数据源冲突", "status": "unavailable"})
 
     if bundle.market:
         _check_field("行情数据", "股价/成交量", bundle.market.stock_data)
@@ -209,6 +217,28 @@ def _build_completeness_banner(issues: list[dict]) -> str:
 """
 
 
+def _build_market_status_card(bundle: DataBundle) -> str:
+    status = bundle.metadata.market_status
+    conflicts = "；".join(status.conflicts) if status.conflicts else "无"
+    sources = ", ".join(status.sources) if status.sources else "N/A"
+    return f"""
+<div class="section" id="market-status">
+<h2>市场状态事实卡</h2>
+<table class="metadata-table">
+<tr><td>证券简称</td><td>{escape_html(status.security_name or 'N/A')}</td></tr>
+<tr><td>风险警示/ST状态</td><td>{escape_html(status.risk_warning_status)}</td></tr>
+<tr><td>状态生效日期</td><td>{escape_html(status.effective_date or 'N/A')}</td></tr>
+<tr><td>涨跌幅限制</td><td>{escape_html(str(status.price_limit_ratio) + '%' if status.price_limit_ratio else 'N/A')}</td></tr>
+<tr><td>交易状态</td><td>{escape_html(status.trading_status)}</td></tr>
+<tr><td>验证时间</td><td>{escape_html(status.verified_at or 'N/A')}</td></tr>
+<tr><td>验证来源</td><td>{escape_html(sources)}</td></tr>
+<tr><td>置信度</td><td>{escape_html(str(status.confidence))}</td></tr>
+<tr><td>来源冲突</td><td>{escape_html(conflicts)}</td></tr>
+</table>
+</div>
+"""
+
+
 def _report_timestamp_suffix(value: str | None = None) -> str:
     """Return a filesystem-safe timestamp suffix for versioned reports."""
     if value is None:
@@ -250,6 +280,8 @@ def generate_html_report(
 
     completeness_issues = _check_data_completeness(bundle)
     completeness_banner = _build_completeness_banner(completeness_issues)
+    raise_if_market_status_conflicts(final_state, bundle)
+    market_status_card = _build_market_status_card(bundle)
 
     data_tables_html = build_data_tables(bundle)
     decision_html = build_decision_section(final_state)
@@ -324,6 +356,8 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 
 {completeness_banner}
 
+{market_status_card}
+
 <div class="section toc">
 <h2>目录</h2>
 <a href="#decision">一、最终交易决策建议</a>
@@ -351,6 +385,9 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 <tr><td>采集时间</td><td>{escape_html(meta.collection_timestamp)}</td></tr>
 <tr><td>数据版本</td><td>{escape_html(meta.bundle_version)}</td></tr>
 <tr><td>选中分析师</td><td>{escape_html(', '.join(meta.selected_analysts))}</td></tr>
+<tr><td>风险警示/ST状态</td><td>{escape_html(meta.market_status.risk_warning_status)}</td></tr>
+<tr><td>证券简称（状态源）</td><td>{escape_html(meta.market_status.security_name or 'N/A')}</td></tr>
+<tr><td>状态验证来源</td><td>{escape_html(', '.join(meta.market_status.sources) if meta.market_status.sources else 'N/A')}</td></tr>
 </table>
 </div>
 

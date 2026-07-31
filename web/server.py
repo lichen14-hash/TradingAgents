@@ -348,7 +348,10 @@ def _run_llm_analysis(task: TaskInfo, bundle):
             debug=False,
         )
 
-        instrument_context = graph.resolve_instrument_context(task.ticker)
+        instrument_context = graph.resolve_instrument_context(
+            task.ticker,
+            market_status=bundle.metadata.market_status.model_dump(),
+        )
         portfolio_ctx = _format_position_context(task.position, task.ticker)
         init_state = graph.propagator.create_initial_state(
             task.ticker,
@@ -408,6 +411,10 @@ def _run_llm_analysis(task: TaskInfo, bundle):
         final_state = {}
         for chunk in trace:
             final_state.update(chunk)
+
+        from tradingagents.agents.utils.market_status_guard import raise_if_market_status_conflicts
+
+        raise_if_market_status_conflicts(final_state, bundle)
 
         signal = graph.process_signal(final_state.get("final_trade_decision", ""))
         task.signal = signal

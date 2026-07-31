@@ -14,6 +14,7 @@ from typing import Annotated
 
 import pandas as pd
 
+from .akshare_provider import _string_storage_lock
 from .market_utils import a_share_to_akshare_symbol, hk_to_akshare_symbol, is_hk_stock
 from .retry import call_with_retry
 
@@ -126,12 +127,13 @@ def fetch_sina_finance_comments(
     lines.append("# Source: Sina Finance via AKShare\n\n")
 
     try:
-        _prev = pd.options.mode.string_storage
-        pd.options.mode.string_storage = "python"
-        try:
-            df = call_with_retry(ak.stock_news_em, symbol=code)
-        finally:
-            pd.options.mode.string_storage = _prev
+        with _string_storage_lock:
+            _prev = pd.options.mode.string_storage
+            pd.options.mode.string_storage = "python"
+            try:
+                df = call_with_retry(ak.stock_news_em, symbol=code)
+            finally:
+                pd.options.mode.string_storage = _prev
         if df is not None and not df.empty:
             title_col = None
             for c in ("新闻标题", "title", "标题"):

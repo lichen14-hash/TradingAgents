@@ -5,6 +5,20 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class MarketStatus(BaseModel):
+    """Verified market/risk-warning status for the analysis date."""
+
+    risk_warning_status: str = "unknown"
+    security_name: str = ""
+    effective_date: str = ""
+    price_limit_ratio: float = 0.0
+    trading_status: str = "unknown"
+    verified_at: str = ""
+    sources: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+    conflicts: list[str] = Field(default_factory=list)
+
+
 class BundleMetadata(BaseModel):
     ticker: str
     trade_date: str
@@ -17,6 +31,7 @@ class BundleMetadata(BaseModel):
     selected_analysts: list[str] = Field(default_factory=list)
     vendor_config: dict = Field(default_factory=dict)
     bundle_version: str = "1.0"
+    market_status: MarketStatus = Field(default_factory=MarketStatus)
 
 
 class MarketData(BaseModel):
