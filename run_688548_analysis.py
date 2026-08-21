@@ -24,6 +24,10 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 TICKER = "688548.SS"
 TRADE_DATE = "2026-06-30"
 COST_PRICE = 35.6
+# The sizing input. The cost price above is kept only so the report can show the
+# user their own unrealised P/L; it is not passed to any agent — see
+# tradingagents/agents/utils/position_sizing.py.
+POSITION_PCT = 10.0
 
 
 def _make_config() -> dict:
@@ -33,11 +37,8 @@ def _make_config() -> dict:
     return config
 
 
-def _format_position_context(ticker: str, cost_price: float) -> str:
-    parts = [f"用户当前持有 {ticker} 的仓位信息："]
-    parts.append(f"- 持仓成本价: {cost_price}")
-    parts.append("请结合用户的实际成本和仓位，给出针对性的操作建议（如浮盈/浮亏幅度、是否止盈止损、是否加仓减仓等）。")
-    return "\n".join(parts)
+def _format_position_context(ticker: str, position_pct: float) -> str:
+    return f"用户当前持有 {ticker}，占其总仓位 {position_pct}%。"
 
 
 def main():
@@ -61,16 +62,17 @@ def main():
     )
 
     # Build portfolio context
-    portfolio_ctx = _format_position_context(TICKER, COST_PRICE)
+    portfolio_ctx = _format_position_context(TICKER, POSITION_PCT)
     instrument_context = graph.resolve_instrument_context(TICKER)
 
-    # Create initial state with user_portfolio_context
+    # Holding prose for the report, structured facts for the sizer.
     init_state = graph.propagator.create_initial_state(
         TICKER,
         bundle.metadata.trade_date,
         instrument_context=instrument_context,
         data_bundle=bundle.model_dump(),
         user_portfolio_context=portfolio_ctx,
+        user_position={"position_pct": POSITION_PCT},
     )
     args = graph.propagator.get_graph_args()
 

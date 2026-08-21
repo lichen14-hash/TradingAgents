@@ -90,8 +90,10 @@ def _structured_pm_llm(captured: dict, decision: PortfolioDecision | None = None
     """
     if decision is None:
         decision = PortfolioDecision(
-            rating=PortfolioRating.HOLD,
-            executive_summary="Hold the position; await catalyst.",
+            # A view tier, not a position instruction — the size and the
+            # position-change label are computed by the sizer downstream.
+            portfolio_view=PortfolioRating.HOLD,
+            executive_summary="Hold; await the catalyst.",
             investment_thesis="Balanced view; neither side carried the debate.",
         )
     structured = MagicMock()
@@ -711,8 +713,8 @@ class TestPortfolioManagerInjection:
         can parse without any extra LLM call."""
         captured = {}
         decision = PortfolioDecision(
-            rating=PortfolioRating.OVERWEIGHT,
-            executive_summary="Build position gradually over the next two weeks.",
+            portfolio_view=PortfolioRating.OVERWEIGHT,
+            executive_summary="Build gradually over the next two weeks.",
             investment_thesis="AI capex cycle remains intact; institutional flows constructive.",
             price_target=215.0,
             time_horizon="3-6 months",
@@ -722,7 +724,7 @@ class TestPortfolioManagerInjection:
         result = pm_node(_make_pm_state())
         md = result["final_trade_decision"]
         assert "**Rating**: Overweight" in md
-        assert "**Executive Summary**: Build position gradually" in md
+        assert "**Executive Summary**: Build gradually" in md
         assert "**Investment Thesis**: AI capex cycle" in md
         assert "**Price Target**: 215.0" in md
         assert "**Time Horizon**: 3-6 months" in md

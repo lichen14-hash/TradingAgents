@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import invoke_text_guarded
 
 
 def create_conservative_debator(llm):
@@ -36,9 +37,11 @@ Here is the current conversation history: {history} Here is the last response fr
 
 Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
-        response = llm.invoke(prompt)
+        text, findings = invoke_text_guarded(
+            llm, prompt, section="风险辩论·保守", role="Conservative Analyst",
+        )
 
-        argument = f"Conservative Analyst: {response.content}"
+        argument = f"Conservative Analyst: {text}"
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
@@ -56,6 +59,9 @@ Engage by questioning their optimism and emphasizing the potential downsides the
             "count": risk_debate_state["count"] + 1,
         }
 
-        return {"risk_debate_state": new_risk_debate_state}
+        return {
+            "risk_debate_state": new_risk_debate_state,
+            "integrity_findings": findings,
+        }
 
     return conservative_node

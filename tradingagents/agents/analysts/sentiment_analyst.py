@@ -32,9 +32,10 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import data_gap_notice
 from tradingagents.agents.utils.structured import (
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured_guarded,
 )
 from tradingagents.datacollector.schema import DataBundle
 from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
@@ -71,6 +72,7 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            gap_notice=data_gap_notice(bundle, "social"),
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -96,17 +98,19 @@ def create_sentiment_analyst(llm):
         # data is already in the prompt.
         formatted_messages = prompt.format_messages(messages=state["messages"])
 
-        report_text = invoke_structured_or_freetext(
+        report_text, _parsed, findings = invoke_structured_guarded(
             structured_llm,
             llm,
             formatted_messages,
             render_sentiment_report,
             "Sentiment Analyst",
+            section="情绪分析",
         )
 
         return {
             "messages": [AIMessage(content=report_text)],
             "sentiment_report": report_text,
+            "integrity_findings": findings,
         }
 
     return sentiment_analyst_node
@@ -120,6 +124,7 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    gap_notice: str = "",
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
     a_share = is_a_share(ticker)
@@ -187,7 +192,7 @@ def _build_system_message(
 
 5. **Identify recurring narrative themes.** What topic keeps coming up across sources? That's the dominant narrative driving current sentiment.
 
-6. **Be honest about data limits.** If a source returned only a handful of items, or returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative.
+6. **Be honest about data limits.** If a source returned only a handful of items, or returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative. Gaps the collector already detected are enumerated under **Data gaps in your own inputs** below, when that section is present.
 
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 
@@ -201,7 +206,7 @@ Fill the following fields:
 - **overall_score**: A number from 0 (maximally bearish) to 10 (maximally bullish); 5 is neutral. Keep it consistent with overall_band.
 - **confidence**: low / medium / high, based on data quality and sample size.
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
-
+{gap_notice}
 {get_language_instruction()}"""
 
 

@@ -7,9 +7,10 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.rating import parse_rating
 from tradingagents.agents.utils.structured import (
     bind_structured,
-    invoke_structured_or_freetext,
+    invoke_structured_guarded,
 )
 
 
@@ -28,26 +29,44 @@ def create_research_manager(llm):
 
 ---
 
-**Rating Scale** (use exactly one):
-- **Buy**: Strong conviction in the bull thesis; recommend taking or growing the position
-- **Overweight**: Constructive view; recommend gradually increasing exposure
-- **Hold**: Balanced view; recommend maintaining the current position
-- **Underweight**: Cautious view; recommend trimming exposure
-- **Sell**: Strong conviction in the bear thesis; recommend exiting or avoiding the position
+**Rating Scale — this is a VIEW rating, not a position instruction** (use exactly one):
+- **Buy**: Decisively bullish; the bull case survived the bear's strongest attacks
+- **Overweight**: Bullish on balance; the bull case is stronger but the bear raised real risks
+- **Hold**: Genuinely balanced, or both cases are weak / the evidence is insufficient
+- **Underweight**: Bearish on balance; the bear case is stronger but the bull case is not dead
+- **Sell**: Decisively bearish; the bear case survived the bull's strongest defence
 
-Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.
+You do NOT know the user's current holdings, and you must not state a target position, a
+percentage, or a lot size. Your rating expresses only how the evidence leans. Whether that
+view implies buying, trimming, or doing nothing depends on the position the Portfolio
+Manager can see and you cannot — inventing a position action here would be a guess dressed
+up as instruction. Express your actionable content as *conditional triggers* instead
+(e.g. "the bull case requires a close above X on rising volume; below Y the thesis fails").
+
+Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold
+for situations where the evidence on both sides is genuinely balanced.
+
+**If either side's argument is missing, empty, or marked as "本轮未产生有效输出"**: say so
+explicitly in your rationale and lower your conviction accordingly. A side that did not speak
+has NOT conceded — do not read silence as agreement, and do not substitute your own version of
+their argument for the argument they failed to make.
 
 ---
 
 **Debate History:**
 {history}""" + get_language_instruction()
 
-        investment_plan = invoke_structured_or_freetext(
+        investment_plan, parsed, findings = invoke_structured_guarded(
             structured_llm,
             llm,
             prompt,
             render_research_plan,
             "Research Manager",
+            section="研究经理裁定",
+        )
+        recommendation = (
+            parsed.recommendation.value if parsed is not None
+            else parse_rating(investment_plan, default="")
         )
 
         new_investment_debate_state = {
@@ -62,6 +81,8 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
         return {
             "investment_debate_state": new_investment_debate_state,
             "investment_plan": investment_plan,
+            "research_recommendation": recommendation,
+            "integrity_findings": findings,
         }
 
     return research_manager_node

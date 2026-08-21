@@ -50,10 +50,12 @@ class TradingAgentsGraph:
         os.makedirs(self.config["data_cache_dir"], exist_ok=True)
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
-        llm_kwargs = self._get_provider_kwargs()
+        llm_kwargs = self._get_provider_kwargs("decision_temperature")
+        debate_kwargs = self._get_provider_kwargs("debate_temperature")
 
         if self.callbacks:
             llm_kwargs["callbacks"] = self.callbacks
+            debate_kwargs["callbacks"] = self.callbacks
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
@@ -67,9 +69,16 @@ class TradingAgentsGraph:
             base_url=self.config.get("backend_url"),
             **llm_kwargs,
         )
+        debate_client = create_llm_client(
+            provider=self.config["llm_provider"],
+            model=self.config["quick_think_llm"],
+            base_url=self.config.get("backend_url"),
+            **debate_kwargs,
+        )
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
+        self.debate_llm = debate_client.get_llm()
 
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -95,6 +104,7 @@ class TradingAgentsGraph:
             self.conditional_logic,
             config=self.config,
             analyst_concurrency_limit=self.config.get("analyst_concurrency_limit", 1),
+            debate_llm=self.debate_llm,
         )
 
         self.propagator = Propagator(
@@ -111,7 +121,7 @@ class TradingAgentsGraph:
         self.graph = self.workflow.compile()
         self._checkpointer_ctx = None
 
-    def _get_provider_kwargs(self) -> dict[str, Any]:
+    def _get_provider_kwargs(self, tier_key: str | None = None) -> dict[str, Any]:
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
 
@@ -128,9 +138,38 @@ class TradingAgentsGraph:
             if effort:
                 kwargs["effort"] = effort
 
+        # Global temperature (when set) overrides the per-tier value so a
+        # single TRADINGAGENTS_TEMPERATURE keeps its historical behavior.
         temperature = self.config.get("temperature")
+        if (temperature is None or temperature == "") and tier_key:
+            temperature = self.config.get(tier_key)
         if temperature is not None and temperature != "":
             kwargs["temperature"] = float(temperature)
+
+        # Explicit output cap. Thinking-enabled models share one budget between
+        # reasoning and the visible answer: when reasoning consumes it all, the
+        # response arrives with no text block and the agent's output is
+        # silently empty (the 2026-08-11 300760.SZ incident). Raising this
+        # leaves room for the answer. None keeps each provider's default.
+        max_tokens = self.config.get("max_tokens")
+        if max_tokens is not None and max_tokens != "":
+            kwargs["max_tokens"] = int(max_tokens)
+
+        # Transport knobs. Both stay absent when unset so each provider client
+        # applies its own default (Anthropic streams and bounds the chunk gap;
+        # see anthropic_client._DEFAULT_STREAMING). Coerced here rather than in
+        # default_config._coerce because the defaults are None, which carries no
+        # type for that helper to coerce against.
+        streaming = self.config.get("llm_streaming")
+        if streaming is not None and streaming != "":
+            kwargs["streaming"] = (
+                streaming.strip().lower() in ("true", "1", "yes", "on")
+                if isinstance(streaming, str) else bool(streaming)
+            )
+
+        request_timeout = self.config.get("llm_request_timeout")
+        if request_timeout is not None and request_timeout != "":
+            kwargs["timeout"] = float(request_timeout)
 
         return kwargs
 
@@ -363,7 +402,13 @@ class TradingAgentsGraph:
         self.curr_state = final_state
 
         if data_bundle is not None:
-            raise_if_market_status_conflicts(final_state, data_bundle)
+            status_warnings = raise_if_market_status_conflicts(final_state, data_bundle)
+            if status_warnings:
+                logger.warning(
+                    "Market status warnings for %s: %s",
+                    company_name,
+                    "; ".join(f"{w.get('section')}:{w.get('reason')}" for w in status_warnings),
+                )
 
         self._log_state(trade_date, final_state)
 

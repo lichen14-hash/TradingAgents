@@ -612,37 +612,51 @@ def get_moneyflow(
     df = df.sort_values("trade_date", ascending=False).head(lookback)
 
     lines = [f"## 个股资金流向 — {ticker} (近{lookback}个交易日)\n"]
-    lines.append("| 日期 | 超大单净流入(万) | 大单净流入(万) | 中单净流入(万) | 小单净流入(万) | 主力净流入(万) |")
+    lines.append("| 日期 | 超大单净流入(万元) | 大单净流入(万元) | 中单净流入(万元) | 小单净流入(万元) | 主力净流入(万元) |")
     lines.append("|---|---|---|---|---|---|")
 
-    for _, row in df.iterrows():
-        date_str = str(row["trade_date"])
-        buy_elg = row.get("buy_elg_amount", 0) or 0
-        sell_elg = row.get("sell_elg_amount", 0) or 0
-        buy_lg = row.get("buy_lg_amount", 0) or 0
-        sell_lg = row.get("sell_lg_amount", 0) or 0
-        buy_md = row.get("buy_md_amount", 0) or 0
-        sell_md = row.get("sell_md_amount", 0) or 0
-        buy_sm = row.get("buy_sm_amount", 0) or 0
-        sell_sm = row.get("sell_sm_amount", 0) or 0
-
-        net_elg = buy_elg - sell_elg
-        net_lg = buy_lg - sell_lg
-        net_md = buy_md - sell_md
-        net_sm = buy_sm - sell_sm
-        net_main = net_elg + net_lg
-
-        lines.append(
-            f"| {date_str} | {net_elg / 10000:.0f} | {net_lg / 10000:.0f} "
-            f"| {net_md / 10000:.0f} | {net_sm / 10000:.0f} | {net_main / 10000:.0f} |"
+    def _net(row, prefix: str) -> float:
+        return float(row.get(f"buy_{prefix}_amount", 0) or 0) - float(
+            row.get(f"sell_{prefix}_amount", 0) or 0
         )
 
-    total_main = sum(
-        (row.get("buy_elg_amount", 0) or 0) - (row.get("sell_elg_amount", 0) or 0)
-        + (row.get("buy_lg_amount", 0) or 0) - (row.get("sell_lg_amount", 0) or 0)
-        for _, row in df.iterrows()
-    )
+    daily_main: list[float] = []
+    for _, row in df.iterrows():
+        raw_date = str(row["trade_date"])
+        date_str = (
+            f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            if len(raw_date) == 8 and raw_date.isdigit() else raw_date
+        )
+        net_elg = _net(row, "elg")
+        net_lg = _net(row, "lg")
+        net_md = _net(row, "md")
+        net_sm = _net(row, "sm")
+        net_main = net_elg + net_lg
+        daily_main.append(net_main)
+
+        # TuShare's moneyflow ``*_amount`` fields are already denominated in
+        # 万元 (verified against 300760.SZ: buy_elg_amount=8338.61 for a stock
+        # with a ~1,800亿 market cap). This used to divide by 10,000 again while
+        # keeping the 万 label, so every figure landed two orders of magnitude
+        # below one and rounded to 0 or ±1. The 2026-08-19 batch consequently
+        # showed a table of "0 / 1 / -1 万元" and a summary line reading
+        # "5日主力资金累计净流出: 1万元", which several agents read as
+        # "essentially no institutional participation".
+        lines.append(
+            f"| {date_str} | {net_elg:,.0f} | {net_lg:,.0f} "
+            f"| {net_md:,.0f} | {net_sm:,.0f} | {net_main:,.0f} |"
+        )
+
+    total_main = sum(daily_main)
     direction = "净流入" if total_main > 0 else "净流出"
-    lines.append(f"\n**{lookback}日主力资金累计{direction}: {abs(total_main) / 10000:.0f}万元**")
+    magnitude = abs(total_main)
+    # Past 亿元 the 万元 figure stops being readable at a glance, and this line is
+    # the one agents quote most often.
+    amount = (
+        f"{magnitude / 10000:,.2f}亿元（{magnitude:,.0f}万元）"
+        if magnitude >= 10000 else f"{magnitude:,.0f}万元"
+    )
+    lines.append(f"\n**{lookback}日主力资金累计{direction}: {amount}**")
+    lines.append("\n注：主力 = 超大单 + 大单；金额单位为万元。")
 
     return "\n".join(lines)

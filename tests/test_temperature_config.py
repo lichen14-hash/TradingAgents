@@ -60,12 +60,12 @@ class TestTemperatureEnvOverlay:
 class TestProviderKwargsTemperature:
     """_get_provider_kwargs float-coerces and forwards temperature, or omits it."""
 
-    def _kwargs_for(self, temperature):
+    def _kwargs_for(self, temperature, tier_key=None, **extra):
         from tradingagents.graph.trading_graph import TradingAgentsGraph
         # Call the method without constructing the full graph.
         graph = TradingAgentsGraph.__new__(TradingAgentsGraph)
-        graph.config = {"llm_provider": "openai", "temperature": temperature}
-        return TradingAgentsGraph._get_provider_kwargs(graph)
+        graph.config = {"llm_provider": "openai", "temperature": temperature, **extra}
+        return TradingAgentsGraph._get_provider_kwargs(graph, tier_key)
 
     def test_float_string_coerced(self):
         assert self._kwargs_for("0.3")["temperature"] == 0.3
@@ -78,3 +78,65 @@ class TestProviderKwargsTemperature:
 
     def test_empty_string_omitted(self):
         assert "temperature" not in self._kwargs_for("")
+
+
+@pytest.mark.unit
+class TestTieredTemperature:
+    """Per-tier temperatures: decision/debate tiers with global override."""
+
+    def _kwargs_for(self, temperature, tier_key=None, **extra):
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+        graph = TradingAgentsGraph.__new__(TradingAgentsGraph)
+        graph.config = {"llm_provider": "openai", "temperature": temperature, **extra}
+        return TradingAgentsGraph._get_provider_kwargs(graph, tier_key)
+
+    def test_tier_used_when_global_unset(self):
+        kwargs = self._kwargs_for(None, "decision_temperature", decision_temperature=0.2)
+        assert kwargs["temperature"] == 0.2
+
+    def test_tier_string_coerced(self):
+        kwargs = self._kwargs_for(None, "debate_temperature", debate_temperature="0.8")
+        assert kwargs["temperature"] == 0.8
+
+    def test_global_overrides_tier(self):
+        kwargs = self._kwargs_for(0.5, "decision_temperature", decision_temperature=0.2)
+        assert kwargs["temperature"] == 0.5
+
+    def test_both_unset_omitted(self):
+        kwargs = self._kwargs_for(None, "decision_temperature", decision_temperature=None)
+        assert "temperature" not in kwargs
+
+    def test_defaults_present_in_config(self):
+        from tradingagents.default_config import DEFAULT_CONFIG
+        # Default is opt-in (None): thinking-enabled Claude models reject
+        # any temperature other than 1, so tiers must not be forced on.
+        assert DEFAULT_CONFIG["decision_temperature"] is None
+        assert DEFAULT_CONFIG["debate_temperature"] is None
+
+    def test_env_overrides_tier_temperatures(self, monkeypatch):
+        import tradingagents.default_config as dc
+        monkeypatch.setenv("TRADINGAGENTS_DECISION_TEMPERATURE", "0.1")
+        monkeypatch.setenv("TRADINGAGENTS_DEBATE_TEMPERATURE", "0.9")
+        importlib.reload(dc)
+        assert float(dc.DEFAULT_CONFIG["decision_temperature"]) == 0.1
+        assert float(dc.DEFAULT_CONFIG["debate_temperature"]) == 0.9
+        monkeypatch.delenv("TRADINGAGENTS_DECISION_TEMPERATURE", raising=False)
+        monkeypatch.delenv("TRADINGAGENTS_DEBATE_TEMPERATURE", raising=False)
+        importlib.reload(dc)
+
+
+@pytest.mark.unit
+class TestGraphSetupDebateLLM:
+    """GraphSetup wires the debate LLM to debate roles, falling back to quick."""
+
+    def test_fallback_to_quick_when_absent(self):
+        from tradingagents.graph.setup import GraphSetup
+        quick, deep = object(), object()
+        gs = GraphSetup(quick, deep, conditional_logic=None, config={})
+        assert gs.debate_llm is quick
+
+    def test_dedicated_debate_llm_kept(self):
+        from tradingagents.graph.setup import GraphSetup
+        quick, deep, debate = object(), object(), object()
+        gs = GraphSetup(quick, deep, conditional_logic=None, config={}, debate_llm=debate)
+        assert gs.debate_llm is debate

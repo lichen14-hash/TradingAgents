@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import data_gap_notice, invoke_text_guarded
 from tradingagents.datacollector.schema import DataBundle
 
 
@@ -63,6 +64,7 @@ def create_fundamentals_analyst(llm):
             " your financial fundamentals analysis. Treat it as supplementary context, not the core.\n\n"
             "Make sure to append a Markdown table at the end of the report to organize"
             " key points in the report, organized and easy to read."
+            + data_gap_notice(bundle, "fundamentals")
             + get_language_instruction()
         )
 
@@ -85,12 +87,14 @@ def create_fundamentals_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         formatted_messages = prompt.format_messages(messages=state["messages"])
-        result = llm.invoke(formatted_messages)
-        report = result.content
+        report, findings = invoke_text_guarded(
+            llm, formatted_messages, section="基本面分析", role="Fundamentals Analyst",
+        )
 
         return {
             "messages": [AIMessage(content=report)],
             "fundamentals_report": report,
+            "integrity_findings": findings,
         }
 
     return fundamentals_analyst_node

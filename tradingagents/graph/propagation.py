@@ -24,6 +24,7 @@ class Propagator:
         instrument_context: str = "",
         data_bundle: dict | None = None,
         user_portfolio_context: str = "",
+        user_position: dict | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -32,6 +33,14 @@ class Propagator:
         ``TradingAgentsGraph.resolve_instrument_context``). When empty, agents
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
+
+        The two holding parameters are deliberately split.
+        ``user_portfolio_context`` is prose for the **report** (it may mention
+        the cost price, which users want to see) and must never reach a prompt.
+        ``user_position`` carries the structured facts the decision layer is
+        allowed to use — currently just ``position_pct``, which is a sizing
+        input. See :mod:`tradingagents.agents.utils.position_sizing` for the
+        measured bias that motivated the split.
         """
         market_status = {}
         if data_bundle:
@@ -47,6 +56,7 @@ class Propagator:
             "trade_date": str(trade_date),
             "past_context": past_context,
             "user_portfolio_context": user_portfolio_context,
+            "user_position": user_position or {},
             "data_bundle": data_bundle or {},
             "market_status": market_status,
             "investment_debate_state": InvestDebateState(
@@ -77,6 +87,15 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            # Machine-readable per-stage ratings, filled by each decision node.
+            # Seeded here so a stage that never ran leaves an empty string
+            # rather than a missing key for the reconciliation node to read.
+            "research_recommendation": "",
+            "trader_direction": "",
+            "portfolio_rating": "",
+            "portfolio_view": "",
+            "position_ceiling": {},
+            "integrity_findings": [],
         }
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:

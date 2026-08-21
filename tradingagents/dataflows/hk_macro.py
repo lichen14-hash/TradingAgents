@@ -236,10 +236,40 @@ def _fetch_hkma_monetary_base() -> tuple[str, str, pd.DataFrame | None]:
         return title, "HKD mn", _read_hkma_cache(cache_key)
 
 
+def _fetch_us_treasury_fred() -> pd.DataFrame | None:
+    """FRED DGS10 作为美债10Y收益率备选源(需 FRED_API_KEY)。"""
+    try:
+        from .fred import _request
+        start_date = (now() - timedelta(days=DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        observations = _request(
+            "series/observations",
+            {
+                "series_id": "DGS10",
+                "observation_start": start_date,
+                "sort_order": "asc",
+            },
+        ).get("observations", [])
+        rows = [
+            {"date": pd.to_datetime(o["date"]), "value": float(o["value"])}
+            for o in observations
+            if o.get("value") not in (".", None, "")
+        ]
+        if rows:
+            logger.info("us_treasury: fallback to FRED DGS10 (%d rows)", len(rows))
+            return pd.DataFrame(rows)
+    except Exception as e:
+        logger.warning("FRED DGS10 fallback failed: %s", e)
+    return None
+
+
 def _fetch_us_treasury() -> tuple[str, str, pd.DataFrame | None]:
-    """US Treasury 10Y yield — directly affects HK via linked exchange rate."""
+    """US Treasury 10Y yield — directly affects HK via linked exchange rate.
+
+    降级链：AKShare 主源 → FRED DGS10 备选源 → 本地缓存(带 Cache notice)。
+    """
     ak = _get_ak()
     title = "US Treasury 10Y Yield"
+    cache_key = "us_treasury"
 
     try:
         start_dt = now() - timedelta(days=DEFAULT_LOOKBACK_DAYS)
@@ -258,11 +288,15 @@ def _fetch_us_treasury() -> tuple[str, str, pd.DataFrame | None]:
                 ).dropna()
                 out["date"] = pd.to_datetime(out["date"], errors="coerce")
                 out["value"] = pd.to_numeric(out["value"], errors="coerce")
-                return title, "%", out.dropna()
+                return title, "%", _write_hkma_cache(cache_key, out.dropna())
     except Exception as e:
         logger.warning("bond_zh_us_rate failed: %s", e)
 
-    return title, "%", None
+    fred_df = _fetch_us_treasury_fred()
+    if fred_df is not None:
+        return title, "%", _write_hkma_cache(cache_key, fred_df)
+
+    return title, "%", _read_hkma_cache(cache_key)
 
 
 def _fetch_hk_rmb_hibor() -> tuple[str, str, pd.DataFrame | None]:

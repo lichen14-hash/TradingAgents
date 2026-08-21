@@ -149,6 +149,7 @@ activemq-data/
 
 # Environments
 .env
+.env*.bak
 .envrc
 .venv
 env/
@@ -233,3 +234,7 @@ reports/
 
 # Node
 node_modules/
+
+# 持仓偏置审计的日线缓存：可由 scripts/audit_position_bias.py 重新抓取的派生数据，
+# 每天都会变。审计结果 JSON（作为下一轮的基线）不在此列，需要入库对比。
+local_data/cache/position_bias_bars.json

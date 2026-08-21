@@ -16,7 +16,7 @@ from datetime import datetime
 from urllib.request import Request, urlopen
 
 from tradingagents.datacollector.schema import MarketStatus
-from tradingagents.dataflows.market_utils import is_a_share
+from tradingagents.dataflows.market_utils import is_a_share, is_etf
 from tradingagents.utils.time_utils import now_iso
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,17 @@ def resolve_market_status(ticker: str, trade_date: str) -> MarketStatus:
     """
 
     normalized = ticker.upper()
+    if is_etf(normalized):
+        return MarketStatus(
+            risk_warning_status="normal",
+            security_name="",
+            effective_date=trade_date,
+            price_limit_ratio=10.0,
+            trading_status="normal",
+            verified_at=now_iso(),
+            sources=["market_rules:etf_no_st_regime"],
+            confidence=1.0,
+        )
     if not is_a_share(normalized):
         return MarketStatus(
             risk_warning_status="normal",
@@ -81,6 +92,49 @@ def clear_market_status_cache() -> None:
     """Clear in-process status cache. Intended for tests."""
 
     _CACHE.clear()
+
+
+_ST_MENTION = re.compile(r"(?:\*|＊)?(?:ST|ＳＴ)", flags=re.IGNORECASE)
+_HISTORICAL_NOTE_MARK = "[数据消毒]"
+
+
+def annotate_historical_st_mentions(
+    text: str, ticker: str, market_status: MarketStatus | None,
+) -> str:
+    """Source-level sanitization: tag ST mentions in per-ticker text as historical.
+
+    Applies only to A-share stocks whose *verified* current status is normal.
+    Instead of rewriting article bodies (risky), this prepends an explicit
+    machine-verified note and annotates known historical ST security names
+    inline, so the LLM reads every ST mention as history rather than the
+    current state.
+    """
+
+    if not text or not text.strip() or market_status is None:
+        return text
+    if getattr(market_status, "risk_warning_status", "unknown") != "normal":
+        return text
+    if not is_a_share(ticker) or is_etf(ticker):
+        return text
+    if _HISTORICAL_NOTE_MARK in text or not _ST_MENTION.search(text):
+        return text
+
+    annotated = text
+    for event in _KNOWN_RISK_WARNING_EVENTS.get(ticker.upper(), []):
+        old_name = event.get("security_name", "")
+        if event.get("risk_warning_status") in {"ST", "*ST"} and old_name:
+            replacement = f"{old_name}（历史简称，风险警示已解除）"
+            annotated = annotated.replace(f"{old_name}（历史简称，风险警示已解除）", old_name)
+            annotated = annotated.replace(old_name, replacement)
+
+    name = getattr(market_status, "security_name", "") or ticker
+    effective = getattr(market_status, "effective_date", "") or "已核验日期"
+    header = (
+        f"> {_HISTORICAL_NOTE_MARK} 经多源核验，{name}（{ticker}）当前风险警示/ST状态为“正常”"
+        f"（生效日期：{effective}）。下文中涉及本标的的任何 ST/*ST/戴帽/摘帽 表述均为历史状态引用，"
+        "不代表当前状态，不得据此套用ST交易规则。\n\n"
+    )
+    return header + annotated
 
 
 def _resolve_a_share_market_status(ticker: str, trade_date: str) -> MarketStatus:

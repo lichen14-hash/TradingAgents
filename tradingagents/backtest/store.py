@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Any
 
 from .db import BacktestDB
+from tradingagents.utils.bundle_inputs import extract_close_price
 from tradingagents.utils.time_utils import now as _cn_now
 
 logger = logging.getLogger(__name__)
@@ -59,6 +61,29 @@ def _extract_executive_summary(text: str) -> str | None:
     if m:
         return m.group(1).strip()[:1000]
     return None
+
+
+def _bundle_section(final_state: dict[str, Any], section: str) -> dict:
+    """Read one section out of the data bundle carried on the final state."""
+    bundle = final_state.get("data_bundle")
+    if not isinstance(bundle, dict):
+        return {}
+    value = bundle.get(section)
+    return value if isinstance(value, dict) else {}
+
+
+def _extract_close_price(stock_data: str, trade_date: str) -> float | None:
+    """Read the signal date's close out of the bundle's OHLCV CSV.
+
+    The bundle is already in memory when a prediction is recorded, so this
+    needs no network call — which is why ``price_at_signal`` was NULL for all
+    301 historical rows despite the comment promising it would be "filled
+    later".
+
+    Kept as a thin alias: the position sizer needs the same parse, so the
+    implementation moved to :mod:`tradingagents.utils.bundle_inputs`.
+    """
+    return extract_close_price(stock_data, trade_date)
 
 
 def _determine_winning_side(judge_text: str) -> str:
@@ -118,9 +143,35 @@ class BacktestStore:
         time_horizon = _extract_time_horizon(decision_text)
         executive_summary = _extract_executive_summary(decision_text)
 
-        analysts_used = ""
-        if "selected_analysts" in config:
-            analysts_used = ",".join(config["selected_analysts"])
+        # ``config`` never carries selected_analysts (the key does not exist in
+        # default_config), which silently left analysts_used empty on every
+        # historical row. The authoritative list is on the bundle metadata.
+        metadata = _bundle_section(final_state, "metadata")
+        selected = metadata.get("selected_analysts") or config.get("selected_analysts") or []
+        analysts_used = ",".join(selected) if isinstance(selected, (list, tuple)) else str(selected)
+
+        price_at_signal = _extract_close_price(
+            _bundle_section(final_state, "market").get("stock_data", ""),
+            metadata.get("trade_date") or trade_date,
+        )
+
+        findings = final_state.get("integrity_findings") or []
+        integrity_flags = json.dumps(findings, ensure_ascii=False) if findings else None
+
+        # The single-name risk ceiling, stored whole ("given this stock's
+        # volatility, at most this much of the portfolio"). It is *not* the
+        # target weight: the target needs the other N-1 names and lives in the
+        # ``allocations`` table. What this column buys is attribution — whether
+        # a ceiling came from the risk budget or from the single-name cap, and
+        # whether ATR was available at all — plus the era marker the bias audit
+        # stratifies on (``method``).
+        #
+        # ``position_sizing`` is deliberately no longer written: it is frozen as
+        # the pre-move stratum for ``position_bias.sizing_method_of``, and
+        # writing new rows into it would dilute exactly the baseline the audit
+        # compares against.
+        ceiling = final_state.get("position_ceiling") or {}
+        position_ceiling = json.dumps(ceiling, ensure_ascii=False) if ceiling else None
 
         try:
             cur = conn.execute(
@@ -130,8 +181,10 @@ class BacktestStore:
                     price_target, time_horizon, executive_summary,
                     analysts_used, deep_model, feedback_enabled,
                     final_state_path,
-                    cost_price, shares, position_pct, source
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    cost_price, shares, position_pct, source,
+                    research_rating, trader_direction, integrity_flags,
+                    portfolio_view, position_ceiling
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     ticker,
                     name or final_state.get("company_of_interest", ticker),
@@ -140,7 +193,7 @@ class BacktestStore:
                     session,
                     rating,
                     signal_numeric,
-                    None,  # price_at_signal filled later
+                    price_at_signal,
                     price_target,
                     time_horizon,
                     executive_summary,
@@ -152,6 +205,11 @@ class BacktestStore:
                     shares,
                     position_pct,
                     source,
+                    final_state.get("research_recommendation") or None,
+                    final_state.get("trader_direction") or None,
+                    integrity_flags,
+                    final_state.get("portfolio_view") or None,
+                    position_ceiling,
                 ),
             )
             conn.commit()
@@ -253,6 +311,122 @@ class BacktestStore:
             params + [limit],
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Portfolio allocation
+    # ------------------------------------------------------------------
+
+    def record_allocation(
+        self,
+        allocation: Any,
+        trade_date: str,
+        *,
+        batch_id: str = "",
+        config: dict[str, Any] | None = None,
+        prediction_ids: dict[str, int] | None = None,
+    ) -> int | None:
+        """Persist one :class:`~tradingagents.portfolio.allocator.Allocation`.
+
+        This is not optional bookkeeping. The target weight is no longer a
+        column on ``predictions`` — the per-ticker graph produces a risk ceiling
+        only — so without these two tables nothing records what the user was
+        actually told to hold, and ``scripts/audit_position_bias.py`` loses the
+        very number it observes.
+
+        ``prediction_ids`` maps ticker → ``predictions.id`` so a row can be
+        joined back to the analysis that produced its view. It is optional
+        because the allocation is computed *before* the rows are recorded in
+        some call paths; a missing id leaves the FK NULL rather than dropping
+        the row.
+
+        Returns the ``run_id``, or ``None`` if the write failed — the caller is
+        a report path and must not be broken by a logging failure.
+        """
+        conn = self.db.get_connection()
+        ids = prediction_ids or {}
+        cfg = (config or {}).get("portfolio") if isinstance(config, dict) else None
+        try:
+            cur = conn.execute(
+                """INSERT INTO allocation_runs (
+                    batch_id, trade_date, created_at,
+                    sigma_current, sigma_target, cash_pct,
+                    investable_pct, frozen_pct, config_json, findings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    batch_id or None,
+                    trade_date,
+                    datetime.now(timezone.utc).isoformat(),
+                    allocation.sigma_current,
+                    allocation.sigma_target,
+                    allocation.cash_pct,
+                    allocation.investable_pct,
+                    allocation.frozen_pct,
+                    json.dumps(cfg, ensure_ascii=False) if cfg else None,
+                    json.dumps(allocation.findings, ensure_ascii=False)
+                    if allocation.findings else None,
+                ),
+            )
+            run_id = cur.lastrowid
+            conn.executemany(
+                """INSERT INTO allocations (
+                    run_id, prediction_id, ticker, name, view, status,
+                    current_pct, ceiling_pct, single_name_target_pct,
+                    target_pct, delta_label, binding_constraint
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        run_id,
+                        ids.get(item.ticker),
+                        item.ticker,
+                        item.name,
+                        item.view or None,
+                        item.status,
+                        item.current_pct,
+                        item.ceiling_pct,
+                        item.single_name_target_pct,
+                        item.target_pct,
+                        item.delta_label or None,
+                        item.binding_constraint or None,
+                    )
+                    for item in allocation.items
+                ],
+            )
+            conn.commit()
+            return run_id
+        except Exception:
+            conn.rollback()
+            logger.warning(
+                "Failed to record allocation for batch %s on %s",
+                batch_id or "(single)", trade_date, exc_info=True,
+            )
+            return None
+
+    def get_allocation_run(self, run_id: int) -> dict | None:
+        conn = self.db.get_connection()
+        row = conn.execute(
+            "SELECT * FROM allocation_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        items = conn.execute(
+            "SELECT * FROM allocations WHERE run_id = ? ORDER BY ticker", (run_id,)
+        ).fetchall()
+        return {**dict(row), "items": [dict(r) for r in items]}
+
+    def get_latest_allocation(self, ticker: str = "") -> dict | None:
+        """Most recent allocation run, optionally one that covered ``ticker``."""
+        conn = self.db.get_connection()
+        if ticker:
+            row = conn.execute(
+                """SELECT run_id FROM allocations WHERE ticker = ?
+                   ORDER BY run_id DESC LIMIT 1""",
+                (ticker,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT run_id FROM allocation_runs ORDER BY run_id DESC LIMIT 1"
+            ).fetchone()
+        return self.get_allocation_run(row[0]) if row else None
 
     # ------------------------------------------------------------------
     # Watchlist

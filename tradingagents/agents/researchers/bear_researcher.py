@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import invoke_text_guarded
 
 
 def create_bear_researcher(llm):
@@ -50,9 +51,11 @@ Last bull argument: {current_response}
 Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the {target_label}.
 """ + get_language_instruction()
 
-        response = llm.invoke(prompt)
+        text, findings = invoke_text_guarded(
+            llm, prompt, section="多空辩论·空方", role="Bear Analyst",
+        )
 
-        argument = f"Bear Analyst: {response.content}"
+        argument = f"Bear Analyst: {text}"
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,
@@ -62,6 +65,9 @@ Use this information to deliver a compelling bear argument, refute the bull's cl
             "count": investment_debate_state["count"] + 1,
         }
 
-        return {"investment_debate_state": new_investment_debate_state}
+        return {
+            "investment_debate_state": new_investment_debate_state,
+            "integrity_findings": findings,
+        }
 
     return bear_node

@@ -66,17 +66,46 @@ def _make_rm_state():
     }
 
 
+# A holding, so the run exercises the risk-budget sizer rather than the
+# no_position_context short-circuit. Only the weight is supplied: the cost price
+# is not an input to any prompt or to the formula — see
+# tradingagents/agents/utils/position_sizing.py.
+USER_POSITION = {"position_pct": 9.0}
+
+# Just enough bundle for the sizer to read an ATR and a close. Without these it
+# falls back to a fixed stop distance and the smoke run would not cover the
+# volatility path at all.
+SIZING_BUNDLE = {
+    "metadata": {"ticker": "NVDA", "trade_date": "2026-08-11"},
+    "market": {
+        "stock_data": (
+            "Date,Open,High,Low,Close,Volume\n"
+            "2026-08-11,182.00,185.40,180.10,183.75,41200000\n"
+        ),
+        # Key and format match a real bundle: market.indicators is a dict of
+        # indicator name -> report text, newest date first.
+        "indicators": {
+            "atr": "## atr values from 2026-07-14 to 2026-08-11:\n\n2026-08-11: 5.2100\n",
+        },
+    },
+}
+
+
 def _make_trader_state(investment_plan: str):
     return {
         "company_of_interest": "NVDA",
         "investment_plan": investment_plan,
+        "user_position": USER_POSITION,
     }
 
 
 def _make_pm_state(investment_plan: str, trader_plan: str):
     return {
         "company_of_interest": "NVDA",
+        "trade_date": "2026-08-11",
         "past_context": "",
+        "user_position": USER_POSITION,
+        "data_bundle": SIZING_BUNDLE,
         "risk_debate_state": {
             "history": "Aggressive: lean in. Conservative: trim. Neutral: balanced sizing.",
             "aggressive_history": "Aggressive: ...",
@@ -152,7 +181,15 @@ def main() -> int:
     checks = [
         ("Research Manager", investment_plan, ["**Recommendation**:"]),
         ("Trader",           trader_plan,     ["**Action**:", "FINAL TRANSACTION PROPOSAL:"]),
-        ("Portfolio Manager", final_decision, ["**Rating**:", "**Executive Summary**:", "**Investment Thesis**:"]),
+        # **Rating** and **View** are both the model's opinion; **Risk Ceiling**
+        # is the deterministic single-name limit. There is deliberately no target
+        # weight in this markdown — it needs the other N-1 holdings and is
+        # rendered by the report layer from the portfolio allocator's output.
+        ("Portfolio Manager", final_decision, [
+            "**Rating**:", "**View**:", "**Executive Summary**:",
+            "**Investment Thesis**:", "**Current Position**:",
+            "**Risk Ceiling**:", "**Sizing**:",
+        ]),
     ]
     print("\n" + "=" * 70 + "\nStructure checks\n" + "=" * 70)
     failures = 0

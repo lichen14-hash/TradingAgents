@@ -21,10 +21,12 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.integrity import data_completeness_findings
 from tradingagents.datacollector import DataCollector
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
+from .reconciliation import create_decision_reconciliation
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +41,15 @@ class GraphSetup:
         conditional_logic: ConditionalLogic,
         config: dict,
         analyst_concurrency_limit: int = 1,
+        debate_llm: Any = None,
     ):
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        # Debate roles (bull/bear researchers, risk debators) run on a
+        # warmer-sampled LLM to preserve adversarial diversity; decision
+        # roles stay on the cold quick/deep LLMs. Falls back to the quick
+        # LLM when no dedicated debate LLM is provided.
+        self.debate_llm = debate_llm if debate_llm is not None else quick_thinking_llm
         self.conditional_logic = conditional_logic
         self.config = config
         self.analyst_concurrency_limit = analyst_concurrency_limit
@@ -62,15 +70,18 @@ class GraphSetup:
             "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
         }
 
-        bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
-        bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
+        bull_researcher_node = create_bull_researcher(self.debate_llm)
+        bear_researcher_node = create_bear_researcher(self.debate_llm)
         research_manager_node = create_research_manager(self.deep_thinking_llm)
         trader_node = create_trader(self.quick_thinking_llm)
 
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        aggressive_analyst = create_aggressive_debator(self.debate_llm)
+        neutral_analyst = create_neutral_debator(self.debate_llm)
+        conservative_analyst = create_conservative_debator(self.debate_llm)
+        portfolio_manager_node = create_portfolio_manager(
+            self.deep_thinking_llm, self.config,
+        )
+        reconciliation_node = create_decision_reconciliation()
 
         workflow = StateGraph(AgentState)
 
@@ -88,6 +99,7 @@ class GraphSetup:
         workflow.add_node("Neutral Analyst", neutral_analyst)
         workflow.add_node("Conservative Analyst", conservative_analyst)
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
+        workflow.add_node("Decision Reconciliation", reconciliation_node)
 
         workflow.add_edge(START, "Data Collection")
         workflow.add_edge("Data Collection", plan.specs[0].agent_node)
@@ -142,7 +154,10 @@ class GraphSetup:
             },
         )
 
-        workflow.add_edge("Portfolio Manager", END)
+        # Deterministic audit step: compares the three decision stages and
+        # records divergence before the run ends. No LLM call.
+        workflow.add_edge("Portfolio Manager", "Decision Reconciliation")
+        workflow.add_edge("Decision Reconciliation", END)
 
         return workflow
 
@@ -151,9 +166,16 @@ class GraphSetup:
         collector = DataCollector(config)
 
         def data_collection_node(state):
+            # Completeness is evaluated here rather than in a renderer so that
+            # every consumer of the graph — CLI, web server, batch runner — sees
+            # the same gaps, and so they reach the DB via integrity_findings.
             if state.get("data_bundle"):
                 logger.info("Data bundle already present in state, skipping collection")
-                return {}
+                return {
+                    "integrity_findings": data_completeness_findings(
+                        state["data_bundle"],
+                    ),
+                }
 
             bundle = collector.collect(
                 ticker=state["company_of_interest"],
@@ -165,6 +187,7 @@ class GraphSetup:
             result = {
                 "data_bundle": bundle.model_dump(),
                 "trade_date": bundle.metadata.trade_date,
+                "integrity_findings": data_completeness_findings(bundle),
             }
 
             if config.get("save_data_bundle", True):

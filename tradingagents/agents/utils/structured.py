@@ -59,16 +59,66 @@ def invoke_structured_or_freetext(
     invocations, a list of message dicts for chat models that take that
     shape). The same value is forwarded to the free-text path so the
     fallback sees the same input the structured call did.
+
+    Returns markdown only. Callers that need to know *whether* the fallback
+    fired — the three decision agents, whose typed rating is lost when it does
+    — should use :func:`invoke_structured_guarded` instead.
     """
+    result, _parsed, _findings = invoke_structured_guarded(
+        structured_llm, plain_llm, prompt, render, agent_name, section="",
+    )
+    return result
+
+
+def invoke_structured_guarded(
+    structured_llm: Any | None,
+    plain_llm: Any,
+    prompt: Any,
+    render: Callable[[T], str],
+    agent_name: str,
+    section: str,
+) -> tuple[str, T | None, list[dict[str, str]]]:
+    """Same fallback behaviour, but report what was lost.
+
+    Returns ``(markdown, parsed_or_None, findings)``:
+
+    - ``parsed`` is the typed Pydantic instance, or ``None`` when the run went
+      through the free-text path. A caller that needs a machine-readable field
+      (e.g. the Research Manager's ``recommendation``) must treat ``None`` as
+      "parse it out of the prose, and flag that you had to".
+    - ``findings`` carries a warn-level integrity finding when the fallback
+      fired, so the degradation reaches the report instead of only the log.
+
+    Why this exists: in the 2026-08-11 300760.SZ incident both runs' Research
+    Manager silently degraded to free text. The rendered reports contained no
+    ``**Recommendation**`` line at all, so nothing downstream could tell that
+    the Portfolio Manager had overridden a research view — the view was simply
+    not recorded. A single ``logger.warning`` was not enough.
+    """
+    from tradingagents.agents.utils.integrity import (
+        invoke_text_guarded,
+        structured_degradation_finding,
+    )
+
     if structured_llm is not None:
         try:
             result = structured_llm.invoke(prompt)
-            return render(result)
+            return render(result), result, []
         except Exception as exc:
             logger.warning(
                 "%s: structured-output invocation failed (%s); retrying once as free text",
                 agent_name, exc,
             )
+            reason: Exception | str = exc
+    else:
+        reason = "provider does not support with_structured_output"
 
-    response = plain_llm.invoke(prompt)
-    return response.content
+    # The free-text fallback gets the same empty-output guard as the debate
+    # agents: a degraded call that also comes back blank must not leave the
+    # section silently empty.
+    text, blank_findings = invoke_text_guarded(
+        plain_llm, prompt, section=section or agent_name, role=agent_name,
+    )
+    findings = [structured_degradation_finding(section or agent_name, agent_name, reason)]
+    findings.extend(blank_findings)
+    return text, None, findings

@@ -162,7 +162,11 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort", "temperature",
-    "api_key", "callbacks", "http_client", "http_async_client",
+    "api_key", "callbacks", "http_client", "http_async_client", "max_tokens",
+    # Off by default here, unlike the Anthropic client: several
+    # OpenAI-compatible endpoints reject ``stream=true`` together with
+    # structured output. Set ``llm_streaming`` only if your endpoint allows it.
+    "streaming",
 )
 
 @dataclass(frozen=True)

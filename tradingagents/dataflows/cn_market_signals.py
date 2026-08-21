@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 from .retry import call_with_retry
+from .signal_freshness import northbound_extra_note, stale_reason
 from tradingagents.utils.time_utils import now, today_str_compact
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,12 @@ def _unavailable_section(title: str, reason: str) -> str:
     )
 
 
+def _stale_notice(title: str, latest, *, extra: str = "") -> str | None:
+    """陈旧则返回不可用段落，否则返回 None。判定逻辑见 `signal_freshness`。"""
+    reason = stale_reason(title, latest, extra=extra)
+    return None if reason is None else _unavailable_section(title, reason)
+
+
 def _fmt_num(val, unit: str = "亿元") -> str:
     if pd.isna(val):
         return "N/A"
@@ -105,6 +112,17 @@ def _fetch_northbound_flow(limit: int | None = None) -> str:
     df = df.dropna(subset=[date_col, value_col]).sort_values(date_col, ascending=False)
 
     recent = df.head(rows).copy()
+
+    title = "北向资金 (Northbound Flow)"
+    if recent.empty:
+        return _unavailable_section(title, "AKShare 返回的净买额列全为空值")
+
+    latest_date_val = recent.iloc[0][date_col]
+    stale = _stale_notice(
+        title, latest_date_val, extra=northbound_extra_note(latest_date_val),
+    )
+    if stale is not None:
+        return stale
 
     lines = [
         "## A股市场信号：北向资金 (Northbound Capital Flow)",
@@ -165,6 +183,14 @@ def _fetch_margin_trading(limit: int | None = None) -> str:
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
     df = df.dropna(subset=[date_col]).sort_values(date_col, ascending=False)
     recent = df.head(rows).copy()
+
+    # 这里查的是 30 天窗口，所以"有返回"并不代表"有当期数据"——同一个陷阱。
+    title = "融资融券 (Margin Trading)"
+    if recent.empty:
+        return _unavailable_section(title, "AKShare 返回的日期列全为空值")
+    stale = _stale_notice(title, recent.iloc[0][date_col])
+    if stale is not None:
+        return stale
 
     lines = [
         "## A股市场信号：融资融券 (Margin Trading Balance)",

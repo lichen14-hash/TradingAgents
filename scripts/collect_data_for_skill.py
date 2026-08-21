@@ -22,7 +22,11 @@ from pathlib import Path
 # Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from tradingagents.datacollector import DataCollector, validate_bundle_completeness
+from tradingagents.datacollector import (
+    DataCollector,
+    classify_bundle_issues,
+    validate_bundle_completeness,
+)
 from tradingagents.dataflows.market_utils import is_etf
 from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -71,17 +75,32 @@ def main():
         save_dir=output_dir,
     )
 
-    # Validate data completeness — abort if any field is unavailable
+    # Validate data completeness — abort only on a *blocking* gap. Warn-level
+    # gaps (a soft-failed optional feed, a stale secondary series) are reported
+    # alongside the success payload so the caller can weigh them, because
+    # aborting on any gap at all meant nearly every real run aborted.
     issues = validate_bundle_completeness(bundle)
-    if issues:
-        detail = [{"category": i["category"], "field": i["field"], "reason": i["reason"][:120]} for i in issues]
+    blocking, warnings = classify_bundle_issues(issues)
+
+    def _detail(items):
+        return [
+            {
+                "category": i["category"], "field": i["field"],
+                "kind": i.get("kind", "unavailable"), "reason": i["reason"][:120],
+            }
+            for i in items
+        ]
+
+    if blocking:
         result = {
             "status": "incomplete",
             "ticker": args.ticker,
             "trade_date": bundle.metadata.trade_date,
             "bundle_path": str(filepath),
-            "issues_count": len(issues),
-            "issues": detail,
+            "issues_count": len(blocking),
+            "issues": _detail(blocking),
+            "warnings_count": len(warnings),
+            "warnings": _detail(warnings),
         }
         print(json.dumps(result, ensure_ascii=False))
         sys.exit(1)
@@ -96,6 +115,8 @@ def main():
         "asset_type": bundle.metadata.asset_type,
         "selected_analysts": bundle.metadata.selected_analysts,
         "bundle_path": str(filepath),
+        "warnings_count": len(warnings),
+        "warnings": _detail(warnings),
     }
     print(json.dumps(result, ensure_ascii=False))
 

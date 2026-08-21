@@ -23,7 +23,29 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
+    "TRADINGAGENTS_DECISION_TEMPERATURE": "decision_temperature",
+    "TRADINGAGENTS_DEBATE_TEMPERATURE":   "debate_temperature",
+    "TRADINGAGENTS_MAX_TOKENS":           "max_tokens",
+    "TRADINGAGENTS_LLM_STREAMING":        "llm_streaming",
+    "TRADINGAGENTS_LLM_TIMEOUT":          "llm_request_timeout",
     "TRADINGAGENTS_DATA_DIR":             "data_dir",
+}
+
+# Position-sizing knobs live one level down (config["position_sizing"][key]), so
+# they need their own env table rather than a row in _ENV_OVERRIDES.
+_POSITION_SIZING_ENV = {
+    "TRADINGAGENTS_RISK_BUDGET_PCT":     "risk_budget_pct",
+    "TRADINGAGENTS_STOP_ATR_MULTIPLE":   "stop_atr_multiple",
+    "TRADINGAGENTS_MAX_SINGLE_NAME_PCT": "max_single_name_pct",
+    "TRADINGAGENTS_FALLBACK_STOP_PCT":   "fallback_stop_pct",
+}
+
+# Same one-level-down treatment for the portfolio block (config["portfolio"]).
+_PORTFOLIO_ENV = {
+    "TRADINGAGENTS_MAX_TOTAL_EQUITY_PCT":   "max_total_equity_pct",
+    "TRADINGAGENTS_CONCENTRATION_WARN_PCT": "concentration_warn_pct",
+    "TRADINGAGENTS_ASSUME_UNCOMMITTED_IS_CASH": "assume_uncommitted_is_cash",
+    "TRADINGAGENTS_MIN_ADD_PCT":            "min_add_pct",
 }
 
 
@@ -57,6 +79,18 @@ def _apply_env_overrides(config: dict) -> dict:
         raw = os.environ.get(env_var)
         if raw is not None and raw != "":
             config.setdefault("data_vendors", {})[category] = raw
+    for env_var, key in _POSITION_SIZING_ENV.items():
+        raw = os.environ.get(env_var)
+        if raw is None or raw == "":
+            continue
+        block = config.setdefault("position_sizing", {})
+        block[key] = _coerce(raw, block.get(key))
+    for env_var, key in _PORTFOLIO_ENV.items():
+        raw = os.environ.get(env_var)
+        if raw is None or raw == "":
+            continue
+        block = config.setdefault("portfolio", {})
+        block[key] = _coerce(raw, block.get(key))
     return config
 
 
@@ -87,7 +121,55 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # each provider at its own default. Lower values reduce run-to-run
     # variation on models that honor it; reasoning models largely ignore it
     # and no setting makes LLM output bit-identical across runs (see README).
+    # When set, this global value overrides both per-tier temperatures below.
     "temperature": None,
+    # Per-tier sampling temperatures. Decision/factual roles (analysts,
+    # research manager, trader, portfolio manager, signal processor) run
+    # cold so the same evidence maps to the same rating across runs;
+    # debate roles (bull/bear researchers, risk debators) stay warm to
+    # preserve adversarial diversity. None (default) leaves the provider
+    # default for that tier. CAUTION: thinking-enabled Claude models
+    # (e.g. claude-opus-4-x via the idealab proxy) reject any temperature
+    # other than 1 with a 400/MPE-001 error, so only opt in on models
+    # that accept custom temperatures.
+    "decision_temperature": None,
+    "debate_temperature": None,
+    # Maximum output tokens per LLM call, forwarded to every provider when set.
+    # Leave at None: an explicit value here would be applied to every model,
+    # including ones whose real cap is lower (claude-3-opus is 4096), turning a
+    # truncation fix into a 400 error.
+    #
+    # None does NOT mean "unlimited" — each provider resolves its own default,
+    # and langchain-anthropic resolves it by looking the model up in the profile
+    # table bundled with the installed package, falling back to 4096 on a miss.
+    # Any model newer than that package (claude-opus-5, claude-sonnet-5) hits the
+    # fallback: a 16x silent downgrade from the 64000 the same package gives
+    # claude-opus-4-5. With thinking enabled, reasoning and the visible answer
+    # share that budget, so reasoning consumes it and the agent returns empty
+    # text or a tool_use block truncated mid-JSON — the root cause of the
+    # 2026-08-11 300760.SZ incident.
+    #
+    # That trap is now closed at the client instead of here:
+    # anthropic_client._resolve_default_max_tokens supplies a generous floor for
+    # models the library does not recognize (and stays out of the way for the
+    # ones it does), and NormalizedChatAnthropic retries once with a doubled
+    # budget when a response comes back with stop_reason="max_tokens". Set this
+    # knob only to override that per deployment.
+    "max_tokens": None,
+    # Transport settings for long agent turns. None means "let the provider
+    # client decide": the Anthropic client streams by default and applies a
+    # 300s gap deadline, the OpenAI-compatible client leaves both alone
+    # (several proxies reject stream=true alongside structured output).
+    #
+    # Why streaming matters here: a non-streaming request that generates tens
+    # of thousands of tokens holds an idle socket for minutes, and every hop in
+    # front of the model kills it at its own idle timeout — that is what cost
+    # 3 of 8 tickers on 2026-08-18 (504 Gateway Time-out / MPE-001) and
+    # 09988.HK on 2026-08-19 ("Connection error." after ~2h). With streaming,
+    # ``llm_request_timeout`` bounds the gap between chunks instead of the whole
+    # response; if you turn streaming off, raise it well above the slowest turn.
+    "llm_streaming": None,
+    "llm_request_timeout": None,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
@@ -193,6 +275,55 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "backtest_holding_days": 5,
     "backtest_direction_threshold": 0.02,
     "backtest_feedback_enabled": False,
+
+    # Position sizing. The target weight is computed from these, deterministically,
+    # instead of being chosen by the model — see
+    # tradingagents/agents/utils/position_sizing.py for the measured bias that
+    # motivated the change (the model was anchoring the size on the user's
+    # unrealised loss, p=0.00012 over 327 predictions).
+    #
+    # Calibrated over all 52 bundles in test_output/: these values put the
+    # per-name ceiling between 2.55% and 15.00% with a 5.76% median, and only
+    # 1 of 52 names reaches max_single_name_pct — i.e. the risk budget is what
+    # normally binds and the cap is a safety valve. Raising risk_budget_pct
+    # scales every position linearly; raising stop_atr_multiple widens stops and
+    # therefore shrinks positions.
+    "position_sizing": {
+        "risk_budget_pct": 1.0,       # portfolio drawdown tolerated per name, %
+        "stop_atr_multiple": 3.0,     # stop distance in ATRs
+        "max_single_name_pct": 15.0,  # single-name ceiling, %
+        "fallback_stop_pct": 12.0,    # stop distance assumed when ATR is missing, %
+        # Share of the per-name ceiling each bullish tier takes, and the share of
+        # the risk-corrected weight each bearish tier keeps.
+        "conviction": {"Buy": 1.00, "Overweight": 0.80},
+        "trim": {"Underweight": 0.60, "Sell": 0.00},
+    },
+
+    # Portfolio level (all N names at once) — see
+    # tradingagents/portfolio/allocator.py.
+    #
+    # Measured motivation: the 2026-08-20 batch held 79.92% across six names
+    # with one at 49% against a 7.37% risk ceiling, and no report said so.
+    #
+    # The first two are *reporting thresholds only* — the allocator says something
+    # when they are crossed, it does not clamp anything to them. In particular
+    # max_total_equity_pct is deliberately NOT a budget cap: the add budget is
+    # plain arithmetic ("how much cash is there"), never a policy about how much
+    # cash to keep. Σtarget is allowed to reach 100%.
+    "portfolio": {
+        "max_total_equity_pct": 90.0,     # Σ current above this → warning
+        "concentration_warn_pct": 25.0,   # one name ≥ this share of the invested book → warning
+        # Whether the share of the book not covered by the submitted names may be
+        # treated as cash. True is an assumption, not a fact — the user may hold
+        # other positions that were never submitted — so every add carries a
+        # finding saying so. Set False to fund adds only from the trims in the
+        # same batch (self-financed rebalancing), which needs no assumption.
+        "assume_uncommitted_is_cash": True,
+        # Rationed adds below this many percentage points are dropped to zero: a
+        # +0.2pp add does not repay its transaction cost, and
+        # expected_rating_for_position_change would label it "Hold" anyway.
+        "min_add_pct": 0.5,
+    },
 
     "benchmark_ticker": None,
     "benchmark_map": {

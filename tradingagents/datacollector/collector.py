@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import platform
+import re
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,7 +18,10 @@ from tradingagents.dataflows.interface import route_to_vendor
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.market_utils import is_a_share, is_hk_stock
 from tradingagents.dataflows.reddit import fetch_reddit_posts
-from tradingagents.dataflows.st_status_provider import resolve_market_status
+from tradingagents.dataflows.st_status_provider import (
+    annotate_historical_st_mentions,
+    resolve_market_status,
+)
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 from tradingagents.dataflows.utils import safe_ticker_component
@@ -112,19 +116,40 @@ def _force_last_complete_daily_bar(
     resolved_trade_date: str,
     ohlcv_df: pd.DataFrame | None,
 ) -> tuple[str, pd.DataFrame | None, str]:
-    """During live sessions, avoid treating today's partial daily bar as final."""
+    """During live sessions, avoid treating today's partial daily bar as final.
+
+    Returns ``"intraday_daily_bar_incomplete"`` whenever the run is asking about
+    *today* while the session is still open, regardless of whether the vendor
+    has published a (partial) bar for today:
+
+    - vendor published today's bar → roll back to the previous session below;
+    - vendor hasn't published it yet → ``_resolve_trading_date`` already rolled
+      back and labelled it ``"data_not_ready"``, which is true but describes the
+      vendor rather than the decision. Relabelling matters because the
+      conviction guard keyed on this reason
+      (:func:`tradingagents.agents.utils.integrity.check_conviction_vs_data_quality`)
+      used to see ``data_not_ready`` and stay silent: in the 2026-08-19 intraday
+      batch all 8 bundles were labelled ``data_not_ready`` and 6 of 7 tickers
+      still came out with a Sell (>60% position change) on a mid-session view.
+    """
     try:
         requested_dt = pd.to_datetime(requested_trade_date)
     except Exception:
         return resolved_trade_date, ohlcv_df, ""
     today = pd_today()
-    if requested_dt != today or resolved_trade_date != today.strftime("%Y-%m-%d"):
+    if requested_dt != today:
         return resolved_trade_date, ohlcv_df, ""
 
     current = now()
     current_minutes = current.hour * 60 + current.minute
     if current_minutes >= _market_close_minutes(ticker):
         return resolved_trade_date, ohlcv_df, ""
+
+    if resolved_trade_date != today.strftime("%Y-%m-%d"):
+        # Already on the last complete session; nothing to roll back, but the
+        # run is still looking at today mid-session.
+        return resolved_trade_date, ohlcv_df, "intraday_daily_bar_incomplete"
+
     if ohlcv_df is None or ohlcv_df.empty or "Date" not in ohlcv_df.columns:
         return resolved_trade_date, ohlcv_df, ""
 
@@ -300,7 +325,24 @@ class DataCollector:
 
         sentiment = self._collect_sentiment_data(ticker, trade_date, shared_ticker_news) if "social" in selected else None
         news = self._collect_news_data(ticker, trade_date, shared_ticker_news, shared_data=shared_data) if "news" in selected else None
-        fundamentals = self._collect_fundamentals_data(ticker, trade_date) if "fundamentals" in selected else None
+        fundamentals = self._collect_fundamentals_data(
+            ticker, trade_date,
+            # Already resolved and cross-source verified above; the competitive
+            # intelligence search needs a real name, and parsing it back out of
+            # the overview text is the fragile path that silently failed.
+            security_name=getattr(market_status, "security_name", "") or "",
+        ) if "fundamentals" in selected else None
+
+        # Source-level sanitization: tag historical ST mentions in per-ticker
+        # text before it reaches any analyst, so verified-normal instruments
+        # are never polluted by stale ST-era articles. Global/industry feeds
+        # are excluded because they may legitimately mention other ST stocks.
+        if sentiment:
+            sentiment.ticker_news = annotate_historical_st_mentions(sentiment.ticker_news, ticker, market_status)
+            sentiment.stocktwits = annotate_historical_st_mentions(sentiment.stocktwits, ticker, market_status)
+            sentiment.reddit = annotate_historical_st_mentions(sentiment.reddit, ticker, market_status)
+        if news:
+            news.ticker_news = annotate_historical_st_mentions(news.ticker_news, ticker, market_status)
 
         bundle = DataBundle(
             metadata=metadata,
@@ -568,7 +610,9 @@ class DataCollector:
             stock_moneyflow=stock_moneyflow,
         )
 
-    def _collect_fundamentals_data(self, ticker: str, trade_date: str) -> FundamentalsData:
+    def _collect_fundamentals_data(
+        self, ticker: str, trade_date: str, security_name: str = "",
+    ) -> FundamentalsData:
         overview = _safe_call(
             "fundamentals:overview",
             route_to_vendor, "get_fundamentals", ticker, trade_date,
@@ -598,8 +642,10 @@ class DataCollector:
             route_to_vendor, "get_income_statement", ticker, "annual", trade_date,
         )
 
-        # Competitive intelligence via web search
-        company_name = self._extract_company_name(overview)
+        # Competitive intelligence via web search. The verified 证券简称 wins:
+        # it is already cross-checked against three sources, while the overview
+        # text shape varies by vendor and market.
+        company_name = security_name.strip() or self._extract_company_name(overview)
         comp_intel = _safe_call(
             "fundamentals:competitive_intelligence",
             get_competitive_intelligence, ticker, company_name, trade_date,
@@ -622,18 +668,47 @@ class DataCollector:
 
     @staticmethod
     def _extract_company_name(overview: str) -> str:
-        """Try to extract company name from the overview JSON or text."""
+        """Try to extract company name from the overview JSON or text.
+
+        This returned ``""`` for every ticker in the 2026-08-19 batch, so every
+        competitive-intelligence search ran on a bare ticker symbol. Two shapes
+        defeated it: the A-share overview prefixes the JSON with markdown
+        headers (``# Fundamentals for 300760.SZ`` … ``{ … }``), so
+        ``json.loads`` on the whole string always raised; and the HK overview is
+        not JSON at all but a markdown bullet list whose first entry is
+        ``- **阿里巴巴集团控股有限公司**: Alibaba Group Holding Limited``.
+        """
         if not overview or overview.startswith(_UNAVAILABLE_PREFIX):
             return ""
-        try:
-            import json as _json
-            data = _json.loads(overview)
-            # AKShare stock_individual_info_em returns keys like "股票简称", "公司名称"
-            for key in ("股票简称", "公司名称", "name", "Name", "shortName"):
-                if key in data and data[key]:
-                    return str(data[key]).strip()
-        except (ValueError, TypeError):
-            pass
+
+        import json as _json
+        import re as _re
+
+        # Embedded JSON object, with or without surrounding markdown.
+        start, end = overview.find("{"), overview.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = _json.loads(overview[start:end + 1])
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, dict):
+                # AKShare stock_individual_info_em returns keys like
+                # "股票简称", "公司名称".
+                for key in ("股票简称", "公司名称", "name", "Name", "shortName"):
+                    value = data.get(key)
+                    if value:
+                        return str(value).strip()
+
+        # HK/markdown shape: the first bold bullet label is the company name.
+        for line in overview.splitlines():
+            match = _re.match(r"\s*[-*]\s*\*\*(.+?)\*\*\s*[:：]", line)
+            if match:
+                candidate = match.group(1).strip()
+                # Skip metric rows ("基本每股收益(元)"); a company name has no
+                # unit parenthesis and is not a pure number.
+                if candidate and "(" not in candidate and "（" not in candidate:
+                    return candidate
+                break
         return ""
 
     def _default_save_path(self, ticker: str, trade_date: str) -> Path:
@@ -650,57 +725,225 @@ class DataCollector:
 
 
 class DataIncompleteError(Exception):
-    """Raised when collected data has unavailable fields."""
+    """Raised when a *blocking* field is unusable.
+
+    Only blocking issues belong here. All-or-nothing admission was the wrong
+    trade: a missing annual cash-flow statement or an unreachable industry
+    ranking endpoint cost the entire run, which pushed callers toward not
+    checking at all. The gate now keys on
+    :func:`classify_bundle_issues`, and warn-level gaps ride through on
+    ``integrity_findings`` so the decision is made *with* the gap on record
+    rather than not made.
+    """
 
     def __init__(self, issues: list[dict]):
         self.issues = issues
         summary = "; ".join(f"{i['category']}/{i['field']}" for i in issues[:5])
         if len(issues) > 5:
             summary += f" ... 等共 {len(issues)} 项"
-        super().__init__(f"数据不完备，共 {len(issues)} 项不可用: {summary}")
+        super().__init__(f"关键数据不完备，共 {len(issues)} 项不可用: {summary}")
+
+
+SEVERITY_BLOCK = "block"
+SEVERITY_WARN = "warn"
+
+# What kind of gap an issue describes, so the report layer can label it without
+# re-parsing the reason text.
+KIND_UNAVAILABLE = "unavailable"  # collector recorded an <unavailable: …> marker
+KIND_MISSING = "missing"          # field empty / whole section absent
+KIND_PARTIAL = "partial"          # provider returned prose admitting a gap
+KIND_STALE = "stale"              # content present but older than its cadence allows
+
+# Soft failures: the provider caught its own error and returned prose instead of
+# raising, so no ``<unavailable: …>`` marker was ever recorded and the string is
+# non-empty — it passes every present/absent check while carrying no data. Real
+# examples from the 2026-08-19 batch: ``industry_data`` = "行业涨跌排名数据暂不可用 /
+# 行业资金流向数据暂不可用", and ``intraday_snapshot`` = "盘中数据暂不可用：…".
+# Keep this list to phrases the providers actually emit (grep dataflows/) so a
+# legitimate document is never flagged for containing the word "unavailable".
+_SOFT_FAIL_PATTERNS = (
+    "暂不可用",
+    "数据不可用",
+    "接口无返回",
+    "data unavailable",
+    "no data available",
+    "no data returned",
+)
+
+# Fields whose absence makes everything downstream fiction rather than merely
+# less informed. Everything else degrades to a warning so one missing annual
+# cash-flow statement no longer costs the whole run (the web gate used to raise
+# on any single issue, producing no report and no DB row at all).
+_BLOCKING_FIELDS = frozenset({
+    ("行情数据", "stock_data"),
+    ("行情数据", "verified_snapshot"),
+    ("市场状态", "risk_warning_status"),
+})
+
+# Freshness budget in calendar days, measured from the bundle's trade date to
+# the newest date the field's own text reports. Keyed by ``(category, field)``,
+# where ``field=None`` covers every field in that category.
+#
+# This exists because "present" and "current" are different questions and only
+# the first was ever asked. In the 2026-08-19 batch,
+# ``prediction_markets/northbound_flow`` was a fully-formed table labelled
+# "最新数据 (2024-08-16)" — two years stale — sitting next to a correctly dated
+# ``margin_trading``, and it passed every check.
+#
+# Deliberately restricted to feeds that update every trading day, so a lag is
+# unambiguously a broken feed. Series with irregular cadence would produce
+# false positives that train the reader to ignore the banner: the newest insider
+# filing can legitimately be months old, ``rrr`` reports the date of the last
+# reserve-ratio *change* (sometimes years back), and quarterly statements lag by
+# design. Widen this only with a per-field budget that matches real cadence.
+_FRESHNESS_BUDGET_DAYS = {
+    ("市场信号", None): 7,
+    ("新闻数据", "stock_moneyflow"): 7,
+}
+
+# ``YYYY-MM-DD`` / ``YYYY/M/D`` / ``YYYY年M月D日`` / bare ``YYYYMMDD``.
+_DATE_RE = re.compile(
+    r"\b(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})\b"
+    r"|\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b"
+)
+
+
+def _soft_fail_notice(value: str) -> str:
+    """Return the offending line when *value* carries a soft-failure notice."""
+    lowered = value.lower()
+    if not any(p in lowered for p in _SOFT_FAIL_PATTERNS):
+        return ""
+    for line in value.splitlines():
+        low = line.lower()
+        if any(p in low for p in _SOFT_FAIL_PATTERNS):
+            return line.strip()[:160]
+    return ""
+
+
+def _latest_reported_date(value: str, not_after: datetime) -> datetime | None:
+    """Newest plausible date mentioned in *value*, ignoring future noise.
+
+    Dates past *not_after* are discarded rather than trusted: a forward-looking
+    date in the text (a scheduled earnings release, a maturity) would otherwise
+    mask a stale feed.
+    """
+    latest: datetime | None = None
+    for match in _DATE_RE.finditer(value):
+        y, m, d = match.group(1, 2, 3)
+        if y is None:
+            y, m, d = match.group(4, 5, 6)
+        try:
+            parsed = datetime(int(y), int(m), int(d))
+        except ValueError:
+            continue
+        if parsed > not_after:
+            continue
+        if latest is None or parsed > latest:
+            latest = parsed
+    return latest
 
 
 def validate_bundle_completeness(bundle: DataBundle) -> list[dict]:
-    """Check all fields in bundle for <unavailable: markers.
+    """Check every bundle field for missing, soft-failed, or stale content.
 
-    Returns list of issues. Each issue is a dict with keys:
-        category, field, reason.
+    Returns a list of issues, each a dict with keys ``category``, ``field``,
+    ``reason``, ``severity`` (``"block"`` / ``"warn"``) and ``kind``
+    (``"unavailable"`` / ``"missing"`` / ``"partial"`` / ``"stale"``). Use
+    :func:`classify_bundle_issues` to split by severity; callers that only look
+    at ``category``/``field``/``reason`` keep working unchanged.
     """
     issues: list[dict] = []
+    trade_date = bundle.metadata.trade_date
+    try:
+        # +1 day of slack: an intraday bundle can legitimately carry a snapshot
+        # timestamped in a market timezone that is already on the next date.
+        freshness_anchor = datetime.strptime(trade_date, "%Y-%m-%d")
+        not_after = freshness_anchor + timedelta(days=1)
+    except (TypeError, ValueError):
+        freshness_anchor = None
+        not_after = None
+
+    def _add(
+        category: str, field: str, reason: str,
+        severity: str | None = None, kind: str = KIND_UNAVAILABLE,
+    ):
+        if severity is None:
+            severity = (
+                SEVERITY_BLOCK if (category, field) in _BLOCKING_FIELDS else SEVERITY_WARN
+            )
+        issues.append({
+            "category": category, "field": field, "reason": reason,
+            "severity": severity, "kind": kind,
+        })
+
+    def _check_staleness(category: str, field: str, value: str):
+        budget = _FRESHNESS_BUDGET_DAYS.get(
+            (category, field), _FRESHNESS_BUDGET_DAYS.get((category, None)),
+        )
+        if budget is None or freshness_anchor is None:
+            return
+        latest = _latest_reported_date(value, not_after)
+        if latest is None:
+            return
+        lag = (freshness_anchor - latest).days
+        if lag > budget:
+            _add(
+                category, field,
+                f"数据陈旧: 自报最新日期 {latest:%Y-%m-%d}，落后交易日 {trade_date} 共 {lag} 天"
+                f"（该类数据的容忍上限为 {budget} 天）",
+                SEVERITY_WARN, KIND_STALE,
+            )
 
     def _check(category: str, field: str, value: str):
-        if value and value.startswith(_UNAVAILABLE_PREFIX):
+        if not value:
+            return
+        if value.startswith(_UNAVAILABLE_PREFIX):
             reason = value[len(_UNAVAILABLE_PREFIX):-1] if value.endswith(">") else value
-            issues.append({"category": category, "field": field, "reason": reason})
+            _add(category, field, reason)
+            return
+        notice = _soft_fail_notice(value)
+        if notice:
+            # Partial by nature: the section rendered its header and whatever it
+            # did retrieve, then reported the gap in prose.
+            _add(category, field, f"部分不可用: {notice}", SEVERITY_WARN, KIND_PARTIAL)
+            # No staleness check on top: once a field says it is unusable, any
+            # date left in its text is explanatory prose, not a data date. The
+            # northbound notice names the 2024-08-19 disclosure cut-off, which
+            # would otherwise be re-reported as "the data is 730 days old".
+            return
+        _check_staleness(category, field, value)
 
     def _check_dict(category: str, d: dict[str, str]):
         for k, v in d.items():
-            if v and (v.startswith(_UNAVAILABLE_PREFIX) or "data unavailable" in v.lower()):
-                reason = v[len(_UNAVAILABLE_PREFIX):-1] if v.startswith(_UNAVAILABLE_PREFIX) and v.endswith(">") else v[:100]
-                issues.append({"category": category, "field": k, "reason": reason})
+            _check(category, k, v)
 
     market_status = getattr(bundle.metadata, "market_status", None)
     if market_status:
         if market_status.risk_warning_status == "unknown":
             reason = "; ".join(market_status.conflicts) or "无法验证风险警示/ST状态"
-            issues.append({"category": "市场状态", "field": "risk_warning_status", "reason": reason})
+            _add("市场状态", "risk_warning_status", reason)
         if market_status.conflicts:
-            issues.append({
-                "category": "市场状态",
-                "field": "source_conflicts",
-                "reason": "; ".join(market_status.conflicts),
-            })
+            _add("市场状态", "source_conflicts", "; ".join(market_status.conflicts))
         if is_a_share(bundle.metadata.ticker) and not market_status.effective_date:
-            issues.append({
-                "category": "市场状态",
-                "field": "effective_date",
-                "reason": "缺少风险警示状态生效日期",
-            })
+            _add("市场状态", "effective_date", "缺少风险警示状态生效日期")
 
     if bundle.market:
         _check("行情数据", "stock_data", bundle.market.stock_data)
         _check("行情数据", "verified_snapshot", bundle.market.verified_snapshot)
         _check_dict("行情数据/技术指标", bundle.market.indicators)
+        # Only meaningful when the run asked for it — a daily-mode bundle leaves
+        # it empty by design. When intraday mode *did* ask, this is the only
+        # incremental data the mode provides, so a silent failure means the run
+        # was effectively a daily run wearing an intraday label. It failed 8/8
+        # in the 2026-08-19 batch and appeared in no check, banner, or DB row.
+        if bundle.metadata.analysis_mode == "intraday":
+            if not (bundle.market.intraday_snapshot or "").strip():
+                _add(
+                    "行情数据", "intraday_snapshot", "盘中模式下未取到盘中快照",
+                    kind=KIND_MISSING,
+                )
+            else:
+                _check("行情数据", "intraday_snapshot", bundle.market.intraday_snapshot)
 
     if bundle.sentiment:
         _check("情绪数据", "ticker_news", bundle.sentiment.ticker_news)
@@ -724,8 +967,42 @@ def validate_bundle_completeness(bundle: DataBundle) -> list[dict]:
         _check("财务数据", "cashflow_annual", bundle.fundamentals.cashflow_annual)
         _check("财务数据", "income_quarterly", bundle.fundamentals.income_quarterly)
         _check("财务数据", "income_annual", bundle.fundamentals.income_annual)
+        # Feeds the Moat section of the fundamentals report, which instructs the
+        # model to use it as supporting evidence — so an error string here is
+        # worse than an empty one. It was unavailable for 6/6 A-shares in the
+        # 2026-08-19 batch (the HK ticker succeeded) and checked nowhere.
+        _check("财务数据", "competitive_intelligence", bundle.fundamentals.competitive_intelligence)
+
+        # Aggregate rule: individually a missing statement is a warning, but a
+        # fundamentals analyst with no statements at all writes fiction.
+        statements = (
+            bundle.fundamentals.balance_sheet_quarterly,
+            bundle.fundamentals.balance_sheet_annual,
+            bundle.fundamentals.cashflow_quarterly,
+            bundle.fundamentals.cashflow_annual,
+            bundle.fundamentals.income_quarterly,
+            bundle.fundamentals.income_annual,
+        )
+        if all(
+            not (s or "").strip() or s.startswith(_UNAVAILABLE_PREFIX) for s in statements
+        ):
+            _add(
+                "财务数据", "全部财报", "六张财务报表全部缺失或不可用",
+                SEVERITY_BLOCK, KIND_MISSING,
+            )
 
     return issues
+
+
+def classify_bundle_issues(issues: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split completeness issues into ``(blocking, warnings)``.
+
+    Issues without a ``severity`` key (older callers, hand-built fixtures) count
+    as blocking so the split can never quietly downgrade an unknown issue.
+    """
+    blocking = [i for i in issues if i.get("severity", SEVERITY_BLOCK) == SEVERITY_BLOCK]
+    warnings = [i for i in issues if i.get("severity", SEVERITY_BLOCK) != SEVERITY_BLOCK]
+    return blocking, warnings
 
 
 def _lookback_date(trade_date: str, days: int) -> str:

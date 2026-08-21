@@ -14,10 +14,26 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from tradingagents.agents.utils.market_status_guard import raise_if_market_status_conflicts
+from tradingagents.agents.utils.market_status_guard import (
+    MarketStatusConflictError,
+    classify_market_status_conflicts,
+)
 from tradingagents.datacollector import DataBundle, DataCollector
 from tradingagents.dataflows.market_utils import is_etf
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.reporting import (
+    build_integrity_banner,
+    collect_integrity_findings,
+    split_data_completeness_findings,
+)
+from tradingagents.reporting.data_completeness import check_data_completeness
+from tradingagents.reporting.html_sections import (
+    build_analysis_sections,
+    build_data_tables,
+    build_decision_section,
+    date_correction_label,
+    date_correction_note,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -106,75 +122,27 @@ def escape_html(text: str) -> str:
 
 
 def _check_data_completeness(bundle: DataBundle) -> list[dict]:
-    """Scan the bundle for missing or unavailable data fields.
+    """Shim kept for existing callers; see tradingagents.reporting.data_completeness."""
+    return check_data_completeness(bundle)
 
-    Returns a list of dicts with keys: category, field, status.
-    status is one of: "ok", "missing", "unavailable".
-    """
-    issues: list[dict] = []
 
-    def _check_field(category: str, field: str, value: str):
-        if not value or not value.strip():
-            issues.append({"category": category, "field": field, "status": "missing"})
-        elif "<unavailable" in value.lower():
-            issues.append({"category": category, "field": field, "status": "unavailable"})
-
-    def _check_dict_fields(category: str, d: dict[str, str]):
-        unavail = 0
-        total = len(d)
-        for _k, v in d.items():
-            if not v or "<unavailable" in v.lower() or "data unavailable" in v.lower():
-                unavail += 1
-        if total > 0 and unavail == total:
-            issues.append({"category": category, "field": f"全部 {total} 项", "status": "unavailable"})
-        elif unavail > 0:
-            issues.append({"category": category, "field": f"{unavail}/{total} 项", "status": "unavailable"})
-
-    market_status = getattr(bundle.metadata, "market_status", None)
-    if market_status:
-        if market_status.risk_warning_status == "unknown":
-            issues.append({"category": "市场状态", "field": "风险警示/ST状态", "status": "unavailable"})
-        if market_status.conflicts:
-            issues.append({"category": "市场状态", "field": "数据源冲突", "status": "unavailable"})
-
-    if bundle.market:
-        _check_field("行情数据", "股价/成交量", bundle.market.stock_data)
-        _check_field("行情数据", "验证快照", bundle.market.verified_snapshot)
-        if not bundle.market.indicators:
-            issues.append({"category": "行情数据", "field": "技术指标", "status": "missing"})
-    else:
-        issues.append({"category": "行情数据", "field": "全部", "status": "missing"})
-
-    if bundle.sentiment:
-        _check_field("情绪数据", "个股新闻", bundle.sentiment.ticker_news)
-        _check_field("情绪数据", "StockTwits/股吧", bundle.sentiment.stocktwits)
-        _check_field("情绪数据", "Reddit/新浪", bundle.sentiment.reddit)
-    else:
-        issues.append({"category": "情绪数据", "field": "全部", "status": "missing"})
-
-    if bundle.news:
-        _check_field("新闻数据", "个股新闻", bundle.news.ticker_news)
-        _check_field("新闻数据", "全球/宏观新闻", bundle.news.global_news)
-        _check_field("新闻数据", "内部交易", bundle.news.insider_transactions)
-        if bundle.news.macro_indicators:
-            _check_dict_fields("宏观指标", bundle.news.macro_indicators)
-        if bundle.news.prediction_markets:
-            _check_dict_fields("市场信号", bundle.news.prediction_markets)
-    else:
-        issues.append({"category": "新闻数据", "field": "全部", "status": "missing"})
-
-    if bundle.fundamentals:
-        _check_field("财务数据", "概览", bundle.fundamentals.overview)
-        _check_field("财务数据", "资产负债表(季度)", bundle.fundamentals.balance_sheet_quarterly)
-        _check_field("财务数据", "资产负债表(年度)", bundle.fundamentals.balance_sheet_annual)
-        _check_field("财务数据", "现金流(季度)", bundle.fundamentals.cashflow_quarterly)
-        _check_field("财务数据", "现金流(年度)", bundle.fundamentals.cashflow_annual)
-        _check_field("财务数据", "利润表(季度)", bundle.fundamentals.income_quarterly)
-        _check_field("财务数据", "利润表(年度)", bundle.fundamentals.income_annual)
-    elif "fundamentals" in (bundle.metadata.selected_analysts or []):
-        issues.append({"category": "财务数据", "field": "全部", "status": "missing"})
-
-    return issues
+# status -> (icon, label, css class). The banner used to collapse everything
+# that was not "missing" into "不可用", which hid the two most actionable kinds:
+# a feed that returned prose admitting a gap ("行业资金流向数据暂不可用") and one
+# that returned real content from years ago (northbound_flow labelled 2024-08-16
+# in a 2026-08-18 run). Both had to be spotted by hand.
+_COMPLETENESS_STATUS_STYLES = {
+    "missing": ("❌", "缺失", "status-empty"),
+    "unavailable": ("⚠️", "不可用", "status-partial"),
+    "partial": ("⚠️", "部分缺失", "status-partial"),
+    "stale": ("🕒", "数据陈旧", "status-partial"),
+}
+_COMPLETENESS_SUMMARY_LABELS = {
+    "missing": "项数据缺失",
+    "unavailable": "项数据不可用",
+    "partial": "项数据部分缺失",
+    "stale": "项数据陈旧",
+}
 
 
 def _build_completeness_banner(issues: list[dict]) -> str:
@@ -182,26 +150,43 @@ def _build_completeness_banner(issues: list[dict]) -> str:
     if not issues:
         return ""
 
-    missing = [i for i in issues if i["status"] == "missing"]
-    unavailable = [i for i in issues if i["status"] == "unavailable"]
+    # Blocking first, then by kind, so the reader hits the load-bearing gaps
+    # before the long tail of empty optional fields.
+    order = list(_COMPLETENESS_STATUS_STYLES)
+    issues = sorted(
+        issues,
+        key=lambda i: (
+            i.get("severity", "block") != "block",
+            order.index(i["status"]) if i["status"] in order else len(order),
+            i.get("category", ""),
+        ),
+    )
 
     rows = []
     for issue in issues:
-        icon = "❌" if issue["status"] == "missing" else "⚠️"
-        label = "缺失" if issue["status"] == "missing" else "不可用"
-        css = "status-empty" if issue["status"] == "missing" else "status-partial"
+        icon, label, css = _COMPLETENESS_STATUS_STYLES.get(
+            issue["status"], ("⚠️", issue["status"], "status-partial"),
+        )
+        if issue.get("severity", "block") == "block":
+            label = f"{label}（关键）"
         rows.append(
             f'<tr><td>{escape_html(issue["category"])}</td>'
             f'<td>{escape_html(issue["field"])}</td>'
-            f'<td class="{css}">{icon} {label}</td></tr>'
+            f'<td class="{css}">{icon} {label}</td>'
+            f'<td>{escape_html(issue.get("reason", ""))}</td></tr>'
         )
 
-    summary_parts = []
-    if missing:
-        summary_parts.append(f"{len(missing)} 项数据缺失")
-    if unavailable:
-        summary_parts.append(f"{len(unavailable)} 项数据不可用")
-    summary = "、".join(summary_parts)
+    counts: dict[str, int] = {}
+    for issue in issues:
+        counts[issue["status"]] = counts.get(issue["status"], 0) + 1
+    summary = "、".join(
+        f"{counts[status]} {_COMPLETENESS_SUMMARY_LABELS[status]}"
+        for status in _COMPLETENESS_SUMMARY_LABELS
+        if status in counts
+    )
+    blocking = sum(1 for i in issues if i.get("severity", "block") == "block")
+    if blocking:
+        summary += f"（其中 {blocking} 项为关键字段）"
 
     return f"""
 <div class="section" style="background: #fff8f0; border: 2px solid #ff9800; border-left-width: 6px;">
@@ -210,8 +195,48 @@ def _build_completeness_banner(issues: list[dict]) -> str:
 本次分析存在 {summary}，可能影响分析结论的准确性。请结合实际情况审慎参考。
 </p>
 <table class="data-table" style="font-size: 13px;">
-<tr><th style="width:120px;">数据类别</th><th>字段</th><th style="width:100px;">状态</th></tr>
+<tr><th style="width:110px;">数据类别</th><th style="width:150px;">字段</th>
+<th style="width:120px;">状态</th><th>说明</th></tr>
 {''.join(rows)}
+</table>
+</div>
+"""
+
+
+def check_rating_action_warning(final_state: dict) -> dict | None:
+    """Warn-level check: PM rating label vs its own position plan.
+
+    Kept as a thin shim for callers outside this module. The check itself now
+    runs inside the graph's ``Decision Reconciliation`` node, so a current run
+    already carries it on ``integrity_findings``; this only reaches the
+    computation for legacy final states — see
+    :func:`tradingagents.reporting.collect_integrity_findings`.
+    """
+    if "integrity_findings" in final_state:
+        return None
+    findings = collect_integrity_findings(final_state)
+    return findings[0] if findings else None
+
+
+def _build_market_status_warning_banner(warnings: list[dict]) -> str:
+    """Render warn-level market status findings without discarding the report."""
+    if not warnings:
+        return ""
+    rows = "".join(
+        f'<tr><td>{escape_html(w.get("section", ""))}</td>'
+        f'<td>{escape_html(w.get("reason", ""))}</td>'
+        f'<td>{escape_html(w.get("snippet", ""))}</td></tr>'
+        for w in warnings
+    )
+    return f"""
+<div class="section" style="background: #fff8f0; border: 2px solid #ff9800; border-left-width: 6px;">
+<h2 style="color: #e65100; border-bottom-color: #ff9800;">⚠️ 市场状态提示</h2>
+<p style="margin-bottom: 12px; color: #bf360c; font-weight: 600;">
+以下表述与已验证市场状态存在不一致，已保留完整分析，请结合事实卡审慎参考。
+</p>
+<table class="data-table" style="font-size: 13px;">
+<tr><th style="width:180px;">报告章节</th><th style="width:220px;">提示</th><th>相关文本</th></tr>
+{rows}
 </table>
 </div>
 """
@@ -239,6 +264,38 @@ def _build_market_status_card(bundle: DataBundle) -> str:
 """
 
 
+def _build_model_footer(config: dict | None) -> str:
+    """Record which models produced the report.
+
+    Price targets for the same ticker have drifted hard between runs
+    (182.85 → 140.00 → 180.00). Diagnosing that requires knowing which model
+    and which sampling settings each report came from, and until now no report
+    recorded it.
+    """
+    cfg = config or DEFAULT_CONFIG
+    rows = [
+        ("LLM 提供方", str(cfg.get("llm_provider", "—"))),
+        ("深度思考模型", str(cfg.get("deep_think_llm", "—"))),
+        ("快速思考模型", str(cfg.get("quick_think_llm", "—"))),
+        ("辩论温度 / 决策温度", f"{cfg.get('debate_temperature', '—')} / {cfg.get('temperature', '—')}"),
+        ("max_tokens", str(cfg.get("max_tokens") or "provider 默认")),
+        ("辩论轮数 / 风险讨论轮数", f"{cfg.get('max_debate_rounds', '—')} / {cfg.get('max_risk_discuss_rounds', '—')}"),
+        ("历史反馈注入", "启用" if cfg.get("backtest_feedback_enabled") else "关闭"),
+    ]
+    body = "".join(
+        f"<tr><td>{escape_html(label)}</td><td>{escape_html(value)}</td></tr>"
+        for label, value in rows
+    )
+    return f"""
+<div class="section" id="run-environment">
+<h3>3.3 运行环境（模型与参数）</h3>
+<table class="metadata-table">
+{body}
+</table>
+</div>
+"""
+
+
 def _report_timestamp_suffix(value: str | None = None) -> str:
     """Return a filesystem-safe timestamp suffix for versioned reports."""
     if value is None:
@@ -256,36 +313,53 @@ def generate_html_report(
     bundle: DataBundle,
     output_dir: Path | None = None,
     report_timestamp: str | None = None,
+    config: dict | None = None,
+    allocation_item=None,
+    allocation=None,
 ) -> Path:
-    from test_output.run_baba_analysis import (
-        build_analysis_sections,
-        build_data_tables,
-        build_decision_section,
-    )
+    """Render one ticker's HTML report.
 
+    ``allocation_item`` is that ticker's row from the portfolio layer
+    (:func:`tradingagents.portfolio.allocator.allocate`), which only exists once
+    every name in the batch has finished — so this function is called *after* the
+    barrier. Omit it and the report shows the risk ceiling with no target, which
+    is what a run with no position context honestly has to say. ``allocation``
+    adds the portfolio totals alongside it.
+    """
     meta = bundle.metadata
     trade_date = meta.trade_date
     original_date = meta.original_trade_date
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     asset_label = "ETF" if is_etf(ticker) else "股票"
 
-    date_note = ""
-    if original_date:
-        reason = getattr(meta, 'date_correction_reason', '')
-        if reason == "data_not_ready":
-            msg = f'用户输入日期 <strong>{escape_html(original_date)}</strong> 的行情数据尚未更新，已使用最近交易日 <strong>{escape_html(trade_date)}</strong> 的数据'
-        else:
-            msg = f'用户输入日期 <strong>{escape_html(original_date)}</strong> 为非交易日，已自动校正为 <strong>{escape_html(trade_date)}</strong>'
-        date_note = f'<p class="date-correction">⚠️ {msg}</p>'
+    correction_reason = getattr(meta, 'date_correction_reason', '')
+    date_note = date_correction_note(correction_reason, original_date, trade_date)
 
+    # Computed from the bundle rather than read off the final state so that a
+    # legacy state (saved before the graph emitted completeness findings) still
+    # gets the full per-field table.
     completeness_issues = _check_data_completeness(bundle)
     completeness_banner = _build_completeness_banner(completeness_issues)
-    raise_if_market_status_conflicts(final_state, bundle)
+    blocking_conflicts, status_warnings = classify_market_status_conflicts(final_state, bundle)
+    if blocking_conflicts:
+        raise MarketStatusConflictError(blocking_conflicts)
+    status_warning_banner = _build_market_status_warning_banner(status_warnings)
+    # Run-integrity findings (empty LLM output, structured-output degradation,
+    # cross-stage override, high conviction on an incomplete bar) get their own
+    # banner rather than being folded into the market-status one: they are about
+    # how the analysis was produced, not about what it claims.
+    # Data-completeness findings are dropped here because the banner above
+    # already renders them per field, with the reason text.
+    _, run_findings = split_data_completeness_findings(
+        collect_integrity_findings(final_state)
+    )
+    integrity_banner = build_integrity_banner(run_findings)
     market_status_card = _build_market_status_card(bundle)
 
     data_tables_html = build_data_tables(bundle)
-    decision_html = build_decision_section(final_state)
+    decision_html = build_decision_section(final_state, allocation_item, allocation)
     analysis_html = build_analysis_sections(final_state)
+    model_footer = _build_model_footer(config)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -356,6 +430,10 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 
 {completeness_banner}
 
+{status_warning_banner}
+
+{integrity_banner}
+
 {market_status_card}
 
 <div class="section toc">
@@ -381,7 +459,7 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 <tr><td>类型</td><td>{escape_html(asset_label)}</td></tr>
 <tr><td>交易日（校正后）</td><td>{escape_html(trade_date)}</td></tr>
 <tr><td>用户输入日期</td><td>{escape_html(original_date or trade_date)}</td></tr>
-<tr><td>是否校正</td><td>{"是（数据尚未更新）" if getattr(meta, 'date_correction_reason', '') == "data_not_ready" else "是（非交易日）" if original_date else "否（输入即为交易日）"}</td></tr>
+<tr><td>是否校正</td><td>{date_correction_label(correction_reason, original_date)}</td></tr>
 <tr><td>采集时间</td><td>{escape_html(meta.collection_timestamp)}</td></tr>
 <tr><td>数据版本</td><td>{escape_html(meta.bundle_version)}</td></tr>
 <tr><td>选中分析师</td><td>{escape_html(', '.join(meta.selected_analysts))}</td></tr>
@@ -390,6 +468,8 @@ pre.data-raw {{ background: #f8f9fa; padding: 12px; border-radius: 6px; font-siz
 <tr><td>状态验证来源</td><td>{escape_html(', '.join(meta.market_status.sources) if meta.market_status.sources else 'N/A')}</td></tr>
 </table>
 </div>
+
+{model_footer}
 
 {data_tables_html}
 
@@ -433,7 +513,9 @@ if __name__ == "__main__":
                 continue
 
             final_state = run_analysis(ticker, bundle)
-            report_path = generate_html_report(ticker, name, final_state, bundle)
+            report_path = generate_html_report(
+                ticker, name, final_state, bundle, config=_make_config(),
+            )
             results.append((ticker, name, "success", str(report_path)))
 
         except Exception as e:

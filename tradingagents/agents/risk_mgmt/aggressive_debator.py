@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import invoke_text_guarded
 
 
 def create_aggressive_debator(llm):
@@ -36,9 +37,11 @@ Here is the current conversation history: {history} Here are the last arguments 
 
 Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
-        response = llm.invoke(prompt)
+        text, findings = invoke_text_guarded(
+            llm, prompt, section="风险辩论·激进", role="Aggressive Analyst",
+        )
 
-        argument = f"Aggressive Analyst: {response.content}"
+        argument = f"Aggressive Analyst: {text}"
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
@@ -54,6 +57,9 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
             "count": risk_debate_state["count"] + 1,
         }
 
-        return {"risk_debate_state": new_risk_debate_state}
+        return {
+            "risk_debate_state": new_risk_debate_state,
+            "integrity_findings": findings,
+        }
 
     return aggressive_node

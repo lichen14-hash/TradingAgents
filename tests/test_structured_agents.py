@@ -49,21 +49,34 @@ class TestRenderTraderProposal:
             reasoning="Strong technicals + fundamentals.",
             entry_price=189.5,
             stop_loss=178.0,
-            position_sizing="6% of portfolio",
+            # Was position_sizing="6% of portfolio". The trader no longer states
+            # a size — that is computed from volatility downstream — so this
+            # field now carries execution staging instead.
+            execution_plan="Two tranches: half at market, half above 195.",
         )
         md = render_trader_proposal(p)
         assert "**Action**: Buy" in md
         assert "**Entry Price**: 189.5" in md
         assert "**Stop Loss**: 178.0" in md
-        assert "**Position Sizing**: 6% of portfolio" in md
+        assert "**Execution Plan**: Two tranches: half at market, half above 195." in md
         assert "FINAL TRANSACTION PROPOSAL: **BUY**" in md
+
+    def test_a_size_is_never_rendered_from_the_trader(self):
+        """两个仓位数字只能来自组合经理那一段（由仓位器算出）。
+
+        交易员这里再出一个百分比，报告里就会有两个互相矛盾的仓位数字——
+        这正是把字段改名的原因，而不只是措辞调整。
+        """
+        p = TraderProposal(action=TraderAction.BUY, reasoning="Setup intact.")
+        assert "Position Sizing" not in render_trader_proposal(p)
+        assert "position_sizing" not in TraderProposal.model_fields
 
     def test_optional_fields_omitted_when_absent(self):
         p = TraderProposal(action=TraderAction.SELL, reasoning="Guidance cut.")
         md = render_trader_proposal(p)
         assert "Entry Price" not in md
         assert "Stop Loss" not in md
-        assert "Position Sizing" not in md
+        assert "Execution Plan" not in md
         assert "FINAL TRANSACTION PROPOSAL: **SELL**" in md
 
 
@@ -130,7 +143,7 @@ class TestTraderAgent:
             reasoning="AI capex cycle intact; institutional flows constructive.",
             entry_price=189.5,
             stop_loss=178.0,
-            position_sizing="6% of portfolio",
+            execution_plan="Scale in on a close above 190.",
         )
         llm = _structured_trader_llm(captured, proposal)
         trader = create_trader(llm)

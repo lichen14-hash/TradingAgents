@@ -74,6 +74,11 @@ class BatchInfo:
     batch_id: str
     task_ids: list[str]
     created_at: str = field(default_factory=lambda: now_str())
+    # The portfolio-level allocation, computed once at the barrier after every
+    # analysis in the batch has finished. ``/portfolio-advice`` reads it instead
+    # of recomputing, so the advice text and the per-ticker reports cannot
+    # disagree about a target weight.
+    allocation: Any = None
 
 
 tasks: dict[str, TaskInfo] = {}
@@ -244,17 +249,36 @@ def _make_config() -> dict:
 
 
 def _format_position_context(pos: PositionInfo | None, ticker: str) -> str:
-    if pos is None or (pos.cost_price is None and pos.shares is None and pos.position_pct is None):
-        return f"用户当前未持有 {ticker}，请从「是否值得建仓」的角度给出建议（包括建议入场价位、建议仓位比例等）。"
-    parts = [f"用户当前持有 {ticker} 的仓位信息："]
-    if pos.cost_price is not None:
-        parts.append(f"- 持仓成本价: {pos.cost_price}")
-    if pos.shares is not None:
-        parts.append(f"- 持仓数量: {pos.shares}")
-    if pos.position_pct is not None:
-        parts.append(f"- 该股占总仓位比例: {pos.position_pct}%")
-    parts.append("请结合用户的实际成本和仓位，给出针对性的操作建议（如浮盈/浮亏幅度、是否止盈止损、是否加仓减仓等）。")
-    return "\n".join(parts)
+    """Holding prose carried on graph state for the **report**, not for a prompt.
+
+    This function used to be the primary cost-price leak: it put 持仓成本价 in
+    front of the Portfolio Manager and the Trader and then asked them, in so
+    many words, to reason about 浮盈/浮亏. The audit over 327 predictions found
+    exactly the bias that invites — deeply-underwater names got 0.0% adds and
+    71.0% trims against 23.8% / 19.0% for profitable ones (p=0.00012), while the
+    forward returns often went the other way (002602.SZ +1.56%, 09988.HK
+    +11.85% over 20 days after those trims).
+
+    So the cost price is gone from here, and the target weight no longer comes
+    from a model at all — see
+    :mod:`tradingagents.agents.utils.position_sizing`. The user still sees their
+    cost price and unrealised P/L in the report, which renders it from
+    ``TaskInfo.position`` directly, and the DB still stores it so the audit can
+    keep proving the gradient is absent.
+    """
+    if pos is None or pos.position_pct is None:
+        return f"用户当前未持有 {ticker}，请从「是否值得建仓」的角度给出判断（观点与入场条件，仓位比例由系统按风险预算计算）。"
+    return f"用户当前持有 {ticker}，占其总仓位 {pos.position_pct}%。"
+
+
+def _position_facts(pos: PositionInfo | None) -> dict:
+    """The structured subset of the holding the decision layer may use.
+
+    Only ``position_pct`` — it is an input to the risk-budget sizer. Cost price
+    and share count are deliberately excluded; see
+    :func:`_format_position_context`.
+    """
+    return {"position_pct": pos.position_pct if pos else None}
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +315,7 @@ def _collect_data(task: TaskInfo, shared_data: dict | None = None):
     from tradingagents.datacollector import DataCollector
     from tradingagents.datacollector.collector import (
         DataIncompleteError,
+        classify_bundle_issues,
         validate_bundle_completeness,
     )
     from tradingagents.dataflows.config import set_config
@@ -311,25 +336,162 @@ def _collect_data(task: TaskInfo, shared_data: dict | None = None):
         shared_data=shared_data,
         intraday=task.intraday,
     )
-    _emit(task, "data_ready", "数据采集完成")
 
     _check_cancelled(task)
 
-    # Data completeness validation
+    # Tiered admission: only a blocking gap (price series, verified snapshot,
+    # ST/risk-warning status, or all six financial statements at once) makes the
+    # run meaningless. Warn-level gaps are surfaced to the user and recorded on
+    # integrity_findings, and the analysis proceeds — see DataIncompleteError.
     issues = validate_bundle_completeness(bundle)
-    if issues:
-        summary_lines = [f"  - {i['category']}/{i['field']}: {i['reason'][:80]}" for i in issues[:10]]
-        if len(issues) > 10:
-            summary_lines.append(f"  ... 等共 {len(issues)} 项")
-        detail = "\n".join(summary_lines)
-        logger.warning("Data incomplete for %s, aborting analysis:\n%s", task.ticker, detail)
-        raise DataIncompleteError(issues)
+    blocking, warnings = classify_bundle_issues(issues)
+
+    if blocking:
+        detail = "\n".join(
+            f"  - {i['category']}/{i['field']}: {i['reason'][:80]}" for i in blocking[:10]
+        )
+        logger.warning(
+            "Blocking data gap for %s, aborting analysis:\n%s", task.ticker, detail,
+        )
+        raise DataIncompleteError(blocking)
+
+    # Reported on the existing data_ready step rather than a new stage: the
+    # front-end drops events whose stage has no matching step element, so a
+    # dedicated stage would have made the notice invisible.
+    if warnings:
+        logger.warning(
+            "Data gaps for %s (proceeding, recorded as findings):\n%s",
+            task.ticker,
+            "\n".join(
+                f"  - {i['category']}/{i['field']}: {i['reason'][:80]}"
+                for i in warnings[:10]
+            ),
+        )
+        preview = "、".join(f"{i['category']}/{i['field']}" for i in warnings[:3])
+        if len(warnings) > 3:
+            preview += f" 等 {len(warnings)} 项"
+        _emit(
+            task, "data_ready",
+            f"数据采集完成，但存在 {len(warnings)} 项非关键缺口（{preview}），已记录并继续分析",
+        )
+    else:
+        _emit(task, "data_ready", "数据采集完成")
 
     return bundle
 
 
-def _run_llm_analysis(task: TaskInfo, bundle):
-    """Phase 2: LLM analysis via graph streaming + report generation."""
+@dataclass
+class GraphRun:
+    """What one completed per-ticker graph run leaves behind.
+
+    Exists because the pipeline had to be cut in two. Everything the graph can
+    answer on its own (the view, the risk ceiling, the reports feeding them) is
+    produced per ticker and in parallel; the *target weight* cannot be, because
+    it needs the other N-1 names. So the run stops here, the batch waits at a
+    barrier, the portfolio layer allocates, and only then does the report get
+    written — which is what keeps exactly one position number in the system.
+    """
+
+    final_state: dict
+    state_path: Path
+    signal: str
+    config: dict
+    store: Any = None
+    # Filled in by _finalize_task, so the allocation rows can be joined back to
+    # the analyses that produced their views.
+    prediction_id: int | None = None
+
+
+def _holding_for_task(task: TaskInfo, run: "GraphRun | None"):
+    """Build the portfolio layer's input for one task.
+
+    A task with no completed graph run still becomes a holding: that money is
+    really in the account, so it has to count towards Σcurrent and the
+    concentration numbers even though there is no view to act on. The allocator
+    freezes such a name at its current weight and says so in a finding.
+    """
+    from tradingagents.portfolio import STATUS_FAILED, STATUS_OK
+    from tradingagents.portfolio.allocator import holding_from_ceiling_dict
+
+    pos = task.position
+    return holding_from_ceiling_dict(
+        task.ticker,
+        current_pct=pos.position_pct if pos else None,
+        view=(run.final_state.get("portfolio_view") or "") if run else "",
+        ceiling=(run.final_state.get("position_ceiling") or {}) if run else {},
+        name=task.name or "",
+        status=STATUS_OK if run else STATUS_FAILED,
+    )
+
+
+def _allocate_for_tasks(
+    task_ids: list[str],
+    runs: dict[str, "GraphRun"],
+    config: dict,
+):
+    """The barrier step: N single-name ceilings → N targets.
+
+    Never raises — a failure here must not cost the user N completed analyses.
+    Returns ``(allocation, {task_id: AllocationItem})``, or ``(None, {})``.
+    """
+    from tradingagents.portfolio import allocate
+
+    try:
+        holdings = [_holding_for_task(tasks[tid], runs.get(tid)) for tid in task_ids]
+        allocation = allocate(holdings, config)
+    except Exception:
+        logger.exception("Portfolio allocation failed; reports fall back to no target")
+        return None, {}
+
+    items = {}
+    for tid in task_ids:
+        item = allocation.by_ticker(tasks[tid].ticker)
+        if item is not None:
+            items[tid] = item
+    return allocation, items
+
+
+def _persist_allocation(allocation, trade_date: str, batch_id: str, runs: dict, config: dict):
+    """Log the allocation to the DB and to disk. Best-effort, never fatal.
+
+    Worth doing even though nothing reads it yet: the target weight is no longer
+    a column on ``predictions``, so without this write there is no record
+    anywhere of what the user was told to hold, and
+    ``scripts/audit_position_bias.py`` loses the number it observes.
+    """
+    if allocation is None:
+        return
+    store = next((r.store for r in runs.values() if r.store), None)
+    if store is not None:
+        prediction_ids = {
+            tasks[tid].ticker: r.prediction_id
+            for tid, r in runs.items()
+            if r.prediction_id is not None
+        }
+        store.record_allocation(
+            allocation, trade_date,
+            batch_id=batch_id, config=config, prediction_ids=prediction_ids,
+        )
+    try:
+        stamp = now_str().replace(":", "").replace("-", "").replace(" ", "_")
+        suffix = safe_ticker_component(batch_id) if batch_id else "single"
+        path = OUTPUT_DIR / f"portfolio_allocation_{suffix}_{stamp}.json"
+        path.write_text(
+            json.dumps(allocation.as_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("Failed to save allocation JSON: %s", exc)
+
+
+def _run_graph_for_task(task: TaskInfo, bundle) -> GraphRun | None:
+    """Phase 2: the per-ticker graph. Stops short of the report.
+
+    Returns ``None`` (with the task marked failed/cancelled) instead of raising,
+    so one bad ticker in a batch never takes the others down. Deliberately does
+    *not* set ``done``: the task is not finished until the portfolio layer has
+    run and :func:`_finalize_task` has written the report.
+    """
     try:
         from tradingagents.dataflows.config import set_config
 
@@ -359,6 +521,7 @@ def _run_llm_analysis(task: TaskInfo, bundle):
             instrument_context=instrument_context,
             data_bundle=bundle.model_dump(),
             user_portfolio_context=portfolio_ctx,
+            user_position=_position_facts(task.position),
         )
         args = graph.propagator.get_graph_args()
 
@@ -412,14 +575,8 @@ def _run_llm_analysis(task: TaskInfo, bundle):
         for chunk in trace:
             final_state.update(chunk)
 
-        from tradingagents.agents.utils.market_status_guard import raise_if_market_status_conflicts
-
-        raise_if_market_status_conflicts(final_state, bundle)
-
-        signal = graph.process_signal(final_state.get("final_trade_decision", ""))
-        task.signal = signal
-
-        # Save final state for history recovery
+        # Save final state FIRST so a guard rejection never discards the
+        # expensive completed analysis (history recovery can rebuild reports).
         safe = safe_ticker_component(task.ticker)
         state_path = OUTPUT_DIR / f"{safe}_final_state.json"
         try:
@@ -430,56 +587,154 @@ def _run_llm_analysis(task: TaskInfo, bundle):
         except Exception as exc:
             logger.warning("Failed to save final state: %s", exc)
 
-        # Record prediction to backtest database
-        if graph._backtest_store:
+        from tradingagents.agents.utils.market_status_guard import (
+            MarketStatusConflictError,
+            raise_if_market_status_conflicts,
+        )
+
+        try:
+            status_warnings = raise_if_market_status_conflicts(final_state, bundle)
+        except MarketStatusConflictError as exc:
+            exc.args = (f"{exc.args[0]}（分析结果已保存至 {state_path.name}，可修复后重新生成报告）",)
+            raise
+        if status_warnings:
+            logger.warning(
+                "Market status warnings for %s: %s",
+                task.ticker,
+                "; ".join(f"{w.get('section')}:{w.get('reason')}" for w in status_warnings),
+            )
+
+        signal = graph.process_signal(final_state.get("final_trade_decision", ""))
+        task.signal = signal
+
+        # Run-integrity findings from the Decision Reconciliation node — missing
+        # LLM output, structured-output degradation, cross-stage override,
+        # high conviction on an incomplete bar. The report banner renders them;
+        # this mirrors them into the server log. (The rating-vs-action check that
+        # used to be duplicated here now runs inside that node.)
+        from tradingagents.reporting import collect_integrity_findings
+        for _f in collect_integrity_findings(final_state):
+            logger.warning(
+                "Integrity finding for %s [%s] %s: %s",
+                task.ticker, _f.get("severity"), _f.get("section"), _f.get("reason"),
+            )
+
+        _check_cancelled(task)
+        return GraphRun(
+            final_state=final_state,
+            state_path=state_path,
+            signal=signal,
+            config=config,
+            store=graph._backtest_store,
+        )
+
+    except _TaskCancelled:
+        task.status = "cancelled"
+        _emit(task, "cancelled", f"{task.ticker} 分析已取消")
+        return None
+    except Exception as e:
+        logger.exception("Analysis failed for %s", task.ticker)
+        task.status = "failed"
+        task.error = str(e)
+        _emit(task, "error", f"分析失败: {e}")
+        return None
+
+
+def _finalize_task(
+    task: TaskInfo, bundle, run: GraphRun, allocation_item=None, allocation=None,
+) -> None:
+    """Phase 3/4: record the prediction, then render the report and the PDF.
+
+    Runs *after* the portfolio layer so ``allocation_item`` carries the final
+    target weight — the single-ticker report and the portfolio table therefore
+    show the same number by construction rather than by two layers agreeing.
+    ``allocation_item=None`` means allocation was unavailable; the report then
+    shows the risk ceiling and no target, which is honest rather than invented.
+    ``allocation`` is the whole batch's result, so each per-ticker report can
+    show its one number against the book it belongs to.
+    """
+    try:
+        if run.store:
             try:
                 pos = task.position
-                graph._backtest_store.record_prediction(
+                pred_id = run.store.record_prediction(
                     ticker=task.ticker,
                     trade_date=bundle.metadata.trade_date,
-                    rating=signal,
-                    final_state=final_state,
-                    config=config,
+                    rating=run.signal,
+                    final_state=run.final_state,
+                    config=run.config,
                     name=task.name or "",
-                    final_state_path=str(state_path),
+                    final_state_path=str(run.state_path),
                     cost_price=pos.cost_price if pos else None,
                     shares=pos.shares if pos else None,
                     position_pct=pos.position_pct if pos else None,
                     source="web",
                 )
+                # record_prediction swallows its own errors and returns None, so
+                # the enclosing ``except`` below can never fire on a failed
+                # insert — checking the return value is the only way a silent
+                # "nothing was recorded" becomes visible.
+                if pred_id is None:
+                    logger.warning(
+                        "Prediction for %s on %s was NOT recorded (see the store's "
+                        "own warning above); the run is not in the backtest DB",
+                        task.ticker, bundle.metadata.trade_date,
+                    )
+                else:
+                    run.prediction_id = pred_id
             except Exception as exc:
                 logger.warning("Failed to record prediction: %s", exc)
 
         _check_cancelled(task)
 
-        # Phase 3: Generate reports
         task.status = "generating"
         _emit(task, "generating", "正在生成报告...")
 
         from run_batch_analysis import generate_html_report
         html_path = generate_html_report(
-            task.ticker, task.name, final_state, bundle,
+            task.ticker, task.name, run.final_state, bundle,
             report_timestamp=task.created_at,
+            config=run.config,
+            allocation_item=allocation_item,
+            allocation=allocation,
         )
         task.html_path = str(html_path)
 
-        # Phase 4: Convert to PDF
         _emit(task, "pdf", "正在转换 PDF...")
         pdf_path = html_path.with_suffix(".pdf")
         _convert_to_pdf(str(html_path), str(pdf_path))
         task.pdf_path = str(pdf_path)
 
         task.status = "done"
-        _emit(task, "done", f"分析完成！信号: {signal}")
+        _emit(task, "done", f"分析完成！信号: {run.signal}")
 
     except _TaskCancelled:
         task.status = "cancelled"
         _emit(task, "cancelled", f"{task.ticker} 分析已取消")
     except Exception as e:
-        logger.exception("Analysis failed for %s", task.ticker)
+        logger.exception("Report generation failed for %s", task.ticker)
         task.status = "failed"
         task.error = str(e)
-        _emit(task, "error", f"分析失败: {e}")
+        _emit(task, "error", f"报告生成失败: {e}")
+
+
+def _run_llm_analysis(task: TaskInfo, bundle) -> None:
+    """Single-ticker path: graph → allocate as a portfolio of one → report.
+
+    A portfolio of one is not a special case that needs its own arithmetic —
+    :func:`tradingagents.portfolio.allocator.allocate` degenerates to exactly
+    what the single-name sizer produces (``tests/test_allocator.py``). Routing
+    the single-ticker path through it too is what stops the two paths from
+    drifting apart.
+    """
+    run = _run_graph_for_task(task, bundle)
+    if run is None:
+        return
+    allocation, items = _allocate_for_tasks([task.task_id], {task.task_id: run}, run.config)
+    _finalize_task(task, bundle, run, items.get(task.task_id), allocation)
+    _persist_allocation(
+        allocation, bundle.metadata.trade_date, "", {task.task_id: run}, run.config,
+    )
 
 
 def _run_analysis(task: TaskInfo):
@@ -495,29 +750,6 @@ def _run_analysis(task: TaskInfo):
         task.status = "failed"
         task.error = str(e)
         _emit(task, "error", f"分析失败: {e}")
-
-
-def _cancel_remaining(batch_id: str, task_ids: list[str], failed_tid: str, reason: str):
-    """Mark remaining tasks as cancelled when one collection fails."""
-    failed_task = tasks.get(failed_tid)
-    if failed_task:
-        failed_task.status = "failed"
-        failed_task.error = reason
-        _emit(failed_task, "error", f"数据采集失败: {reason}")
-
-    for tid in task_ids:
-        if tid == failed_tid:
-            continue
-        t = tasks.get(tid)
-        if t and t.status not in ("done", "failed"):
-            t.status = "cancelled"
-            t.error = f"批量任务已取消（{failed_task.ticker if failed_task else ''} 数据源异常）"
-            _emit(t, "cancelled", t.error)
-
-    logger.warning(
-        "Batch %s cancelled: %s failed data collection (%s)",
-        batch_id, failed_tid, reason,
-    )
 
 
 def _run_batch_impl(batch_id: str, task_ids: list[str]):
@@ -590,20 +822,68 @@ def _run_batch_impl(batch_id: str, task_ids: list[str]):
                         _emit(t, "cancelled", "用户取消了批量任务")
                 return
             except Exception as exc:
-                # 某只采集失败 → 取消整批剩余任务
-                for f in futures:
-                    f.cancel()
-                _cancel_remaining(batch_id, task_ids, failed_tid=tid, reason=str(exc))
-                return
-
-    logger.info("Batch %s: all %d collections succeeded, starting LLM analysis", batch_id, len(task_ids))
-
-    # --- 阶段2：全部采集成功，并发LLM分析 ---
+                # 某只采集失败 → 仅标记该任务失败，其余任务继续
+                failed_task = tasks.get(tid)
+                if failed_task:
+                    failed_task.status = "failed"
+                    failed_task.error = str(exc)
+                    _emit(failed_task, "error", f"数据采集失败: {exc}")
+                logger.warning(
+                    "Batch %s: collection failed for %s (%s), continuing others",
+                    batch_id, tid, exc,
+                )
+    
+    ready_tids = [tid for tid in task_ids if tid in bundles]
+    if not ready_tids:
+        logger.warning("Batch %s: no collections succeeded, nothing to analyze", batch_id)
+        return
+    
+    logger.info(
+        "Batch %s: %d/%d collections succeeded, starting LLM analysis",
+        batch_id, len(ready_tids), len(task_ids),
+    )
+    
+    # --- 阶段2：对采集成功的任务并发跑图（到「观点 + 风险上限」为止，不出报告）---
+    runs: dict[str, GraphRun] = {}
     with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
-        futures = [pool.submit(_run_llm_analysis, tasks[tid], bundles[tid]) for tid in task_ids]
-        # 等待所有分析完成（各自处理异常）
-        for f in futures:
-            f.result()  # propagate won't crash; _run_llm_analysis catches internally
+        futures = {
+            pool.submit(_run_graph_for_task, tasks[tid], bundles[tid]): tid
+            for tid in ready_tids
+        }
+        for f in as_completed(futures):
+            run = f.result()  # never raises; _run_graph_for_task catches internally
+            if run is not None:
+                runs[futures[f]] = run
+
+    # --- 阶段2.5：组合层屏障 ---
+    #
+    # 这个 with 块退出时 N 只已全部跑完，这是**进程内、自动**的屏障，不依赖用户点按钮
+    # ——所以目标仓位在这里算，而不是等 /portfolio-advice 被访问时才算。
+    #
+    # 参与分配的是**全部** task_ids 而不只是跑成功的那些：采集或分析失败的票，那笔钱
+    # 真实存在，必须计入 Σcurrent 与集中度，只是按「维持现状」处理并留痕。
+    allocation, items = _allocate_for_tasks(task_ids, runs, config)
+    batch = batches.get(batch_id)
+    if batch is not None:
+        batch.allocation = allocation
+    if allocation is not None:
+        from tradingagents.portfolio.allocator import describe_allocation
+        logger.info("Batch %s allocation: %s", batch_id, describe_allocation(allocation))
+
+    # --- 阶段3：并发生成报告（此时每只票的目标仓位已定）---
+    with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_ANALYSES) as pool:
+        report_futures = [
+            pool.submit(
+                _finalize_task, tasks[tid], bundles[tid], run,
+                items.get(tid), allocation,
+            )
+            for tid, run in runs.items()
+        ]
+        for f in report_futures:
+            f.result()  # never raises; _finalize_task catches internally
+
+    # 落库放在报告之后，这样 prediction_id 已经有值、分配行能接回产生它的那次分析。
+    _persist_allocation(allocation, trade_date, batch_id, runs, config)
 
 
 def _run_batch(batch_id: str, task_ids: list[str]):
@@ -1215,16 +1495,13 @@ async def generate_portfolio_advice(batch_id: str):
             except Exception:
                 pass
 
-        pos_desc = ""
-        if pos and (pos.cost_price or pos.shares or pos.position_pct):
-            parts = []
-            if pos.cost_price is not None:
-                parts.append(f"成本价:{pos.cost_price}")
-            if pos.shares is not None:
-                parts.append(f"持仓数量:{pos.shares}")
-            if pos.position_pct is not None:
-                parts.append(f"仓位占比:{pos.position_pct}%")
-            pos_desc = ", ".join(parts)
+        # Position share only. This endpoint builds its own holding description
+        # independently of _format_position_context, which is how the cost price
+        # kept reaching a model even after the per-ticker path was cleaned up —
+        # the same 浮亏-driven trimming bias applies here. See
+        # tradingagents/agents/utils/position_sizing.py.
+        if pos and pos.position_pct is not None:
+            pos_desc = f"仓位占比:{pos.position_pct}%"
         else:
             pos_desc = "未持有"
 

@@ -21,6 +21,7 @@ from collections.abc import Callable
 import pandas as pd
 
 from .retry import call_with_retry
+from .signal_freshness import stale_reason
 from tradingagents.utils.time_utils import today_str
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,15 @@ def _fetch_southbound_flow(limit: int | None) -> str:
 
     n = min(limit or DEFAULT_ROWS, len(df))
     recent = df.head(n)
+    if recent.empty:
+        return _unavailable_section("南向资金", "AKShare 返回的净买额列全为空值")
     latest = recent.iloc[0]
+
+    # 南向资金目前仍在披露，但取数形状与已经停更的北向资金完全相同（上游某列变成
+    # 全 NaN 后，"最新一行"会永久停在最后一个有值的日子），所以同一个守卫必须在这里。
+    reason = stale_reason("南向资金", latest[date_col])
+    if reason is not None:
+        return _unavailable_section("南向资金", reason)
 
     cumulative_5d = df.head(5)[value_col].sum()
 

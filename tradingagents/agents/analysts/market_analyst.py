@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.agents.utils.integrity import data_gap_notice, invoke_text_guarded
 from tradingagents.datacollector.schema import DataBundle
 
 
@@ -81,6 +82,7 @@ def create_market_analyst(llm):
             " help traders make informed decisions."
             " Make sure to append a Markdown table at the end of the report to"
             " organize key points in the report, organized and easy to read."
+            + data_gap_notice(bundle, "market")
             + get_language_instruction()
         )
 
@@ -103,12 +105,14 @@ def create_market_analyst(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
 
         formatted_messages = prompt.format_messages(messages=state["messages"])
-        result = llm.invoke(formatted_messages)
-        report = result.content
+        report, findings = invoke_text_guarded(
+            llm, formatted_messages, section="市场技术分析", role="Market Analyst",
+        )
 
         return {
             "messages": [AIMessage(content=report)],
             "market_report": report,
+            "integrity_findings": findings,
         }
 
     return market_analyst_node
